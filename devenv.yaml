@@ -1,0 +1,36 @@
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  treefmt-nix:
+    url: github:numtide/treefmt-nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  crate2nix:
+    url: github:nix-community/crate2nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  materializer:
+    url: git+https://github.com/Alb-O/materializer.git?ref=main
+    flake: false
+  committer:
+    url: git+https://github.com/Alb-O/committer.git?ref=main
+    flake: false
+  env-rust:
+    url: github:Alb-O/env-rust
+    flake: false
+imports:
+  - materializer
+  - committer
+  - env-rust
