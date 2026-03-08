@@ -7,12 +7,15 @@ let
     src = ./.;
     cargoLock.lockFile = ./Cargo.lock;
   };
-  appAgentsText = if builtins.pathExists ./AGENTS.md 
-    then (builtins.readFile ./AGENTS.md)
-    else "";
 in
 {
-  instructions.fragments = lib.mkAfter [ appAgentsText ];
+  instructions.fragments = lib.mkAfter [
+    (
+      if builtins.pathExists ./AGENTS.md
+      then builtins.readFile ./AGENTS.md
+      else ""
+    )
+  ];
 
   env = {
     SERVICE_NAME = "order-quote-cli";
