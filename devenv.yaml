@@ -24,8 +24,8 @@ inputs:
   dvnv-instructions-composer:
     url: github:Alb-O/dvnv-instructions-composer
     flake: false
-  committer:
-    url: github:Alb-O/committer
+  agent-committer:
+    url: github:Alb-O/agent-committer
     flake: false
   dvnv-rust-env:
     url: github:Alb-O/dvnv-rust-env
@@ -38,7 +38,7 @@ inputs:
     flake: false
 imports:
   - dvnv-instructions-composer
-  - committer
+  - agent-committer
   - dvnv-rust-env
   - dvnv-docs-env
   - dvnv-local-inputs
