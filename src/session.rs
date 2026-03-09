@@ -8,11 +8,11 @@ use crate::{
     ids::{NodeId, Revision},
     limits::{LeafMeta, WeightPair, canonicalize_weights},
     nav::best_neighbor,
-    preset::{PresetKind, build_preset_subtree, subtree_matches_preset},
+    preset::{PresetKind, apply_preset_subtree},
     resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
     snapshot::Snapshot,
     solver::{SolverPolicy, summarize},
-    tree::{Node, SplitNode, Tree},
+    tree::Tree,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,10 +170,15 @@ impl<T> Session<T> {
         weights: Option<WeightPair>,
     ) -> Result<NodeId, OpError> {
         let focus = self.require_focus_leaf()?;
-        let weights = checked_weights(weights.unwrap_or_default())?;
+        let weights = weights
+            .unwrap_or_default()
+            .checked()
+            .ok_or(OpError::InvalidWeights)?;
         let old_selection = self.selection;
         let new_leaf = self.tree.new_leaf(payload, meta);
-        let split_id = self.wrap_existing_with_leaf(focus, axis, slot, new_leaf, weights);
+        let split_id = self
+            .tree
+            .attach_as_sibling(focus, new_leaf, axis, slot, weights);
         self.repair_after_mutation(focus, old_selection, Some(split_id));
         self.bump_revision();
         self.validate().map_err(OpError::Validation)?;
@@ -192,12 +197,15 @@ impl<T> Session<T> {
         let focus = self.require_focus_leaf()?;
         let old_selection = self.selection;
         let new_leaf = self.tree.new_leaf(payload, meta);
-        let split_id = self.wrap_existing_with_leaf(
+        let split_id = self.tree.attach_as_sibling(
             selection,
+            new_leaf,
             axis,
             slot,
-            new_leaf,
-            checked_weights(weights.unwrap_or_default())?,
+            weights
+                .unwrap_or_default()
+                .checked()
+                .ok_or(OpError::InvalidWeights)?,
         );
         self.repair_after_mutation(focus, old_selection, Some(split_id));
         self.bump_revision();
@@ -208,18 +216,10 @@ impl<T> Session<T> {
     pub fn remove_focus(&mut self) -> Result<(), OpError> {
         let focus = self.require_focus_leaf()?;
         let old_selection = self.selection;
-        let fallback = if self.tree.root_id() == Some(focus) {
-            self.tree.set_root(None);
-            None
-        } else {
-            let sibling = self
-                .tree
-                .sibling_of(focus)
-                .ok_or(OpError::NoParent(focus))?;
-            let replacement = self.tree.collapse_unary_parent(focus).unwrap_or(sibling);
-            Some(replacement)
-        };
-        self.tree.remove_node(focus);
+        let fallback = self
+            .tree
+            .remove_leaf_and_collapse(focus)
+            .ok_or(OpError::NotLeaf(focus))?;
         self.repair_after_mutation(focus, old_selection, fallback);
         self.bump_revision();
         self.validate().map_err(OpError::Validation)?;
@@ -237,38 +237,9 @@ impl<T> Session<T> {
         }
         let focus = self.require_focus_leaf()?;
         let old_selection = self.selection;
-        let parent_a = self.tree.parent_of(a);
-        let parent_b = self.tree.parent_of(b);
-        if parent_a == parent_b {
-            let parent = parent_a.ok_or(OpError::AncestorConflict)?;
-            let split = self.split_mut(parent)?;
-            if split.a == a && split.b == b {
-                split.a = b;
-                split.b = a;
-            } else if split.a == b && split.b == a {
-                split.a = a;
-                split.b = b;
-            } else {
-                return Err(OpError::AncestorConflict);
-            }
-        } else {
-            match parent_a {
-                Some(parent) => self.tree.replace_child(parent, a, b),
-                None => {
-                    self.tree.set_root(Some(b));
-                    self.tree.set_parent(b, None);
-                }
-            }
-            match parent_b {
-                Some(parent) => self.tree.replace_child(parent, b, a),
-                None => {
-                    self.tree.set_root(Some(a));
-                    self.tree.set_parent(a, None);
-                }
-            }
-            self.tree.set_parent(a, parent_b);
-            self.tree.set_parent(b, parent_a);
-        }
+        self.tree
+            .swap_disjoint_nodes(a, b)
+            .expect("validated disjoint swap should succeed");
         self.repair_after_mutation(focus, old_selection, self.tree.root_id());
         self.bump_revision();
         self.validate().map_err(OpError::Validation)?;
@@ -282,25 +253,15 @@ impl<T> Session<T> {
         slot: Slot,
     ) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
-        if selection == target {
-            return Err(OpError::SameNode);
-        }
-        self.require_node(target)?;
-        if self.tree.contains_in_subtree(selection, target) {
-            return Err(OpError::TargetInsideSelection);
-        }
         let focus = self.require_focus_leaf()?;
         let old_selection = self.selection;
-        let effective_target = remaining_subtree_after_detach(&self.tree, target, selection)
-            .ok_or(OpError::AncestorConflict)?;
-        self.tree.detach_subtree(selection);
-        let split_id = self.tree.attach_as_sibling(
-            effective_target,
+        let split_id = self.tree.move_subtree_as_sibling_of(
             selection,
+            target,
             axis,
             slot,
             WeightPair::default(),
-        );
+        )?;
         self.repair_after_mutation(focus, old_selection, Some(split_id));
         self.bump_revision();
         self.validate().map_err(OpError::Validation)?;
@@ -308,7 +269,9 @@ impl<T> Session<T> {
     }
 
     pub fn focus_dir(&mut self, dir: Direction, snap: &Snapshot) -> Result<(), NavError> {
-        self.ensure_fresh_snapshot(snap).map_err(map_op_to_nav)?;
+        self.ensure_fresh_snapshot(snap).map_err(|error| {
+            map_op_to_nav(error).expect("focus_dir should only map nav-compatible op errors")
+        })?;
         let focus = self.focus.ok_or(NavError::Empty)?;
         let leaf_rects = self.leaf_rects_from_snapshot(snap)?;
         let next =
@@ -351,57 +314,45 @@ impl<T> Session<T> {
 
     pub fn toggle_axis(&mut self) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
-        let split = self.split_mut(selection)?;
-        split.axis = toggle_axis(split.axis);
+        self.tree
+            .toggle_split_axis(selection)
+            .ok_or(OpError::NotSplit(selection))?;
         self.bump_revision();
         self.validate().map_err(OpError::Validation)
     }
 
     pub fn mirror_selection(&mut self, axis: Axis) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
-        self.mirror_subtree(selection, axis)?;
+        self.tree.mirror_subtree_axis(selection, axis);
         self.bump_revision();
         self.validate().map_err(OpError::Validation)
     }
 
     pub fn rebalance_selection(&mut self, mode: RebalanceMode) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
-        self.rebalance_subtree(selection, mode)?;
+        match mode {
+            RebalanceMode::BinaryEqual => self
+                .tree
+                .rebalance_subtree_binary_equal(selection)
+                .ok_or(OpError::NotSplit(selection))?,
+            RebalanceMode::LeafCount => {
+                self.tree
+                    .rebalance_subtree_leaf_count(selection)
+                    .ok_or(OpError::NotSplit(selection))?;
+            }
+        }
         self.bump_revision();
         self.validate().map_err(OpError::Validation)
     }
 
     pub fn apply_preset(&mut self, preset: PresetKind) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
-        if self.tree.is_leaf(selection) {
-            return Ok(());
-        }
-        if subtree_matches_preset(&self.tree, selection, preset)? {
-            return Ok(());
-        }
         let focus = self.require_focus_leaf()?;
-        let old_selection = self.selection;
-        let parent = self.tree.parent_of(selection);
-        let leaves = self.tree.leaf_ids_dfs(selection);
-        let split_ids = collect_split_ids(&self.tree, selection);
-        for leaf in &leaves {
-            self.tree.set_parent(*leaf, None);
-        }
-        for split in split_ids {
-            self.tree.remove_node(split);
-        }
-        let rebuilt = build_preset_subtree(&mut self.tree, &leaves, preset)?;
-        match parent {
-            Some(parent) => {
-                self.tree.replace_child(parent, selection, rebuilt);
-                self.tree.set_parent(rebuilt, Some(parent));
-            }
-            None => {
-                self.tree.set_root(Some(rebuilt));
-                self.tree.set_parent(rebuilt, None);
-            }
-        }
-        self.repair_after_mutation(focus, old_selection, Some(rebuilt));
+        let Some(rebuilt) = apply_preset_subtree(&mut self.tree, selection, preset)? else {
+            return Ok(());
+        };
+
+        self.repair_after_mutation(focus, Some(rebuilt), Some(rebuilt));
         self.bump_revision();
         self.validate().map_err(OpError::Validation)
     }
@@ -444,7 +395,9 @@ impl<T> Session<T> {
             };
             let total = info.total;
             let weights = canonicalize_weights(new_a, total - new_a);
-            self.split_mut(split_id)?.weights = weights;
+            self.tree
+                .set_split_weights(split_id, weights)
+                .ok_or(OpError::NotSplit(split_id))?;
         }
         self.bump_revision();
         self.validate().map_err(OpError::Validation)
@@ -462,65 +415,6 @@ impl<T> Session<T> {
                     .ok_or(NavError::MissingSnapshotRect(id))
             })
             .collect()
-    }
-
-    fn rebalance_subtree(&mut self, id: NodeId, mode: RebalanceMode) -> Result<u32, OpError> {
-        if self.tree.is_leaf(id) {
-            return Ok(1);
-        }
-        let (a, b) = self.tree.children_of(id).ok_or(OpError::NotSplit(id))?;
-        let count_a = self.rebalance_subtree(a, mode)?;
-        let count_b = self.rebalance_subtree(b, mode)?;
-        let weights = match mode {
-            RebalanceMode::BinaryEqual => WeightPair::default(),
-            RebalanceMode::LeafCount => canonicalize_weights(count_a, count_b),
-        };
-        self.split_mut(id)?.weights = weights;
-        Ok(count_a + count_b)
-    }
-
-    fn mirror_subtree(&mut self, id: NodeId, axis: Axis) -> Result<(), OpError> {
-        let children = match self.tree.children_of(id) {
-            Some(children) => children,
-            None => return Ok(()),
-        };
-        self.mirror_subtree(children.0, axis)?;
-        self.mirror_subtree(children.1, axis)?;
-        let split = self.split_mut(id)?;
-        if split.axis == axis {
-            std::mem::swap(&mut split.a, &mut split.b);
-            std::mem::swap(&mut split.weights.a, &mut split.weights.b);
-        }
-        Ok(())
-    }
-
-    fn wrap_existing_with_leaf(
-        &mut self,
-        existing: NodeId,
-        axis: Axis,
-        slot: Slot,
-        new_leaf: NodeId,
-        weights: WeightPair,
-    ) -> NodeId {
-        let parent = self.tree.parent_of(existing);
-        let (a, b) = match slot {
-            Slot::A => (new_leaf, existing),
-            Slot::B => (existing, new_leaf),
-        };
-        let split_id = self.tree.new_split(axis, a, b, weights);
-        self.tree.set_parent(a, Some(split_id));
-        self.tree.set_parent(b, Some(split_id));
-        match parent {
-            Some(parent) => {
-                self.tree.replace_child(parent, existing, split_id);
-                self.tree.set_parent(split_id, Some(parent));
-            }
-            None => {
-                self.tree.set_root(Some(split_id));
-                self.tree.set_parent(split_id, None);
-            }
-        }
-        split_id
     }
 
     fn repair_after_mutation(
@@ -586,10 +480,6 @@ impl<T> Session<T> {
         }
     }
 
-    fn split_mut(&mut self, id: NodeId) -> Result<&mut SplitNode, OpError> {
-        self.tree.split_mut(id).ok_or(OpError::NotSplit(id))
-    }
-
     fn require_node(&self, id: NodeId) -> Result<(), OpError> {
         if self.tree.contains(id) {
             Ok(())
@@ -612,70 +502,60 @@ impl<T> Session<T> {
     }
 }
 
-fn collect_split_ids<T>(tree: &Tree<T>, id: NodeId) -> Vec<NodeId> {
-    let mut out = Vec::new();
-    collect_split_ids_inner(tree, id, &mut out);
-    out
-}
-
-fn collect_split_ids_inner<T>(tree: &Tree<T>, id: NodeId, out: &mut Vec<NodeId>) {
-    if let Some((a, b)) = tree.children_of(id) {
-        collect_split_ids_inner(tree, a, out);
-        collect_split_ids_inner(tree, b, out);
-        out.push(id);
-    }
-}
-
-fn checked_weights(weights: WeightPair) -> Result<WeightPair, OpError> {
-    if weights.a == 0 && weights.b == 0 {
-        Err(OpError::InvalidWeights)
-    } else {
-        Ok(weights)
-    }
-}
-
-fn remaining_subtree_after_detach<T>(
-    tree: &Tree<T>,
-    current: NodeId,
-    removed: NodeId,
-) -> Option<NodeId> {
-    if current == removed {
-        return None;
-    }
-    match tree.node(current)? {
-        Node::Leaf(_) => Some(current),
-        Node::Split(split) => match (
-            remaining_subtree_after_detach(tree, split.a, removed),
-            remaining_subtree_after_detach(tree, split.b, removed),
-        ) {
-            (Some(_), Some(_)) => Some(current),
-            (Some(id), None) | (None, Some(id)) => Some(id),
-            (None, None) => None,
-        },
-    }
-}
-
-fn toggle_axis(axis: Axis) -> Axis {
-    match axis {
-        Axis::X => Axis::Y,
-        Axis::Y => Axis::X,
-    }
-}
-
-fn map_op_to_nav(error: OpError) -> NavError {
+fn map_op_to_nav(error: OpError) -> Option<NavError> {
     match error {
-        OpError::Empty => NavError::Empty,
-        OpError::StaleSnapshot => NavError::StaleSnapshot,
-        OpError::Validation(err) => NavError::Validation(err),
+        OpError::Empty => Some(NavError::Empty),
+        OpError::StaleSnapshot => Some(NavError::StaleSnapshot),
+        OpError::Validation(err) => Some(NavError::Validation(err)),
         OpError::MissingNode(id) | OpError::NotLeaf(id) | OpError::NotSplit(id) => {
-            NavError::MissingSnapshotRect(id)
+            Some(NavError::MissingSnapshotRect(id))
         }
-        other => NavError::Validation(ValidationError::InvalidSelection(match other {
-            OpError::NoParent(id) => id,
-            OpError::MissingNode(id) => id,
-            OpError::NotLeaf(id) => id,
-            OpError::NotSplit(id) => id,
-            _ => 0,
-        })),
+        OpError::NonEmpty
+        | OpError::InvalidWeights
+        | OpError::NoParent(_)
+        | OpError::SameNode
+        | OpError::AncestorConflict
+        | OpError::TargetInsideSelection => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_op_to_nav;
+    use crate::{NavError, OpError, ValidationError};
+
+    #[test]
+    fn nav_compatible_op_errors_map_exactly() {
+        assert_eq!(map_op_to_nav(OpError::Empty), Some(NavError::Empty));
+        assert_eq!(
+            map_op_to_nav(OpError::StaleSnapshot),
+            Some(NavError::StaleSnapshot)
+        );
+        assert_eq!(
+            map_op_to_nav(OpError::Validation(ValidationError::Cycle(7))),
+            Some(NavError::Validation(ValidationError::Cycle(7)))
+        );
+        assert_eq!(
+            map_op_to_nav(OpError::MissingNode(11)),
+            Some(NavError::MissingSnapshotRect(11))
+        );
+        assert_eq!(
+            map_op_to_nav(OpError::NotLeaf(13)),
+            Some(NavError::MissingSnapshotRect(13))
+        );
+        assert_eq!(
+            map_op_to_nav(OpError::NotSplit(17)),
+            Some(NavError::MissingSnapshotRect(17))
+        );
+    }
+
+    #[test]
+    fn non_nav_op_errors_do_not_synthesize_nav_behavior() {
+        assert_eq!(map_op_to_nav(OpError::NonEmpty), None);
+        assert_eq!(map_op_to_nav(OpError::InvalidWeights), None);
+        assert_eq!(map_op_to_nav(OpError::NoParent(19)), None);
+        assert_eq!(map_op_to_nav(OpError::SameNode), None);
+        assert_eq!(map_op_to_nav(OpError::AncestorConflict), None);
+        assert_eq!(map_op_to_nav(OpError::TargetInsideSelection), None);
     }
 }

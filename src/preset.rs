@@ -40,6 +40,22 @@ pub enum PresetKind {
     Wide(WidePreset),
 }
 
+pub(crate) fn validate_preset(preset: PresetKind) -> Result<(), OpError> {
+    match preset {
+        PresetKind::Balanced(_) | PresetKind::Dwindle(_) => Ok(()),
+        PresetKind::Tall(preset) => preset
+            .root_weights
+            .checked()
+            .map(|_| ())
+            .ok_or(OpError::InvalidWeights),
+        PresetKind::Wide(preset) => preset
+            .root_weights
+            .checked()
+            .map(|_| ())
+            .ok_or(OpError::InvalidWeights),
+    }
+}
+
 pub(crate) fn build_preset_subtree<T>(
     tree: &mut Tree<T>,
     leaves: &[NodeId],
@@ -60,6 +76,7 @@ pub(crate) fn subtree_matches_preset<T>(
     root: NodeId,
     preset: PresetKind,
 ) -> Result<bool, OpError> {
+    validate_preset(preset)?;
     let leaves = tree.leaf_ids_dfs(root);
     match preset {
         PresetKind::Balanced(preset) => Ok(matches_balanced(tree, root, &leaves, preset)),
@@ -75,6 +92,52 @@ pub(crate) fn subtree_matches_preset<T>(
     }
 }
 
+pub(crate) fn apply_preset_subtree<T>(
+    tree: &mut Tree<T>,
+    selection: NodeId,
+    preset: PresetKind,
+) -> Result<Option<NodeId>, OpError> {
+    validate_preset(preset)?;
+    if tree.is_leaf(selection) {
+        return Ok(None);
+    }
+    if subtree_matches_preset(tree, selection, preset)? {
+        return Ok(None);
+    }
+
+    let parent = tree.parent_of(selection);
+    let leaves = tree.leaf_ids_dfs(selection);
+    let split_ids = tree.split_ids_postorder(selection);
+
+    for leaf in &leaves {
+        tree.set_parent(*leaf, None);
+    }
+    for split in split_ids {
+        tree.remove_node(split);
+    }
+
+    let rebuilt = build_preset_subtree_validated(tree, &leaves, preset);
+    match parent {
+        Some(parent) => {
+            tree.replace_child(parent, selection, rebuilt);
+        }
+        None => {
+            tree.set_root(Some(rebuilt));
+            tree.set_parent(rebuilt, None);
+        }
+    }
+
+    Ok(Some(rebuilt))
+}
+
+fn build_preset_subtree_validated<T>(
+    tree: &mut Tree<T>,
+    leaves: &[NodeId],
+    preset: PresetKind,
+) -> NodeId {
+    build_preset_subtree(tree, leaves, preset).expect("validated preset rebuild should succeed")
+}
+
 fn build_balanced<T>(
     tree: &mut Tree<T>,
     leaves: &[NodeId],
@@ -88,7 +151,7 @@ fn build_balanced<T>(
     }
     let mid = leaves.len().div_ceil(2);
     let next_axis = if preset.alternate {
-        toggle_axis(preset.start_axis)
+        preset.start_axis.toggled()
     } else {
         preset.start_axis
     };
@@ -130,7 +193,7 @@ fn build_dwindle<T>(
         return Ok(leaves[0]);
     }
     let first = leaves[0];
-    let rest = build_dwindle(tree, &leaves[1..], toggle_axis(axis), slot)?;
+    let rest = build_dwindle(tree, &leaves[1..], axis.toggled(), slot)?;
     let (a, b) = match slot {
         Slot::A => (rest, first),
         Slot::B => (first, rest),
@@ -160,7 +223,10 @@ fn build_tall<T>(
         Axis::X,
         a,
         b,
-        checked_weights(preset.root_weights)?,
+        preset
+            .root_weights
+            .checked()
+            .ok_or(OpError::InvalidWeights)?,
     ))
 }
 
@@ -186,7 +252,10 @@ fn build_wide<T>(
         Axis::Y,
         a,
         b,
-        checked_weights(preset.root_weights)?,
+        preset
+            .root_weights
+            .checked()
+            .ok_or(OpError::InvalidWeights)?,
     ))
 }
 
@@ -227,23 +296,23 @@ fn matches_balanced<T>(
     let Some(split) = tree.split(id) else {
         return false;
     };
-    if split.axis != preset.start_axis {
+    if split.axis() != preset.start_axis {
         return false;
     }
     let mid = leaves.len().div_ceil(2);
-    if split.weights != canonicalize_weights(mid as u32, (leaves.len() - mid) as u32) {
+    if split.weights() != canonicalize_weights(mid as u32, (leaves.len() - mid) as u32) {
         return false;
     }
     let next = BalancedPreset {
         start_axis: if preset.alternate {
-            toggle_axis(preset.start_axis)
+            preset.start_axis.toggled()
         } else {
             preset.start_axis
         },
         alternate: preset.alternate,
     };
-    matches_balanced(tree, split.a, &leaves[..mid], next)
-        && matches_balanced(tree, split.b, &leaves[mid..], next)
+    matches_balanced(tree, split.a(), &leaves[..mid], next)
+        && matches_balanced(tree, split.b(), &leaves[mid..], next)
 }
 
 fn matches_dwindle<T>(
@@ -262,19 +331,19 @@ fn matches_dwindle<T>(
     let Some(split) = tree.split(id) else {
         return false;
     };
-    if split.axis != axis || split.weights != WeightPair::default() {
+    if split.axis() != axis || split.weights() != WeightPair::default() {
         return false;
     }
     match slot {
         Slot::A => {
-            split.b == leaves[0]
-                && tree.is_leaf(split.b)
-                && matches_dwindle(tree, split.a, &leaves[1..], toggle_axis(axis), slot)
+            split.b() == leaves[0]
+                && tree.is_leaf(split.b())
+                && matches_dwindle(tree, split.a(), &leaves[1..], axis.toggled(), slot)
         }
         Slot::B => {
-            split.a == leaves[0]
-                && tree.is_leaf(split.a)
-                && matches_dwindle(tree, split.b, &leaves[1..], toggle_axis(axis), slot)
+            split.a() == leaves[0]
+                && tree.is_leaf(split.a())
+                && matches_dwindle(tree, split.b(), &leaves[1..], axis.toggled(), slot)
         }
     }
 }
@@ -289,19 +358,19 @@ fn matches_tall<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: TallPr
     let Some(split) = tree.split(id) else {
         return false;
     };
-    if split.axis != Axis::X || split.weights != preset.root_weights {
+    if split.axis() != Axis::X || split.weights() != preset.root_weights {
         return false;
     }
     match preset.master_slot {
         Slot::A => {
-            split.a == leaves[0]
-                && tree.is_leaf(split.a)
-                && matches_equal_linear(tree, split.b, &leaves[1..], Axis::Y)
+            split.a() == leaves[0]
+                && tree.is_leaf(split.a())
+                && matches_equal_linear(tree, split.b(), &leaves[1..], Axis::Y)
         }
         Slot::B => {
-            split.b == leaves[0]
-                && tree.is_leaf(split.b)
-                && matches_equal_linear(tree, split.a, &leaves[1..], Axis::Y)
+            split.b() == leaves[0]
+                && tree.is_leaf(split.b())
+                && matches_equal_linear(tree, split.a(), &leaves[1..], Axis::Y)
         }
     }
 }
@@ -316,19 +385,19 @@ fn matches_wide<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: WidePr
     let Some(split) = tree.split(id) else {
         return false;
     };
-    if split.axis != Axis::Y || split.weights != preset.root_weights {
+    if split.axis() != Axis::Y || split.weights() != preset.root_weights {
         return false;
     }
     match preset.master_slot {
         Slot::A => {
-            split.a == leaves[0]
-                && tree.is_leaf(split.a)
-                && matches_equal_linear(tree, split.b, &leaves[1..], Axis::X)
+            split.a() == leaves[0]
+                && tree.is_leaf(split.a())
+                && matches_equal_linear(tree, split.b(), &leaves[1..], Axis::X)
         }
         Slot::B => {
-            split.b == leaves[0]
-                && tree.is_leaf(split.b)
-                && matches_equal_linear(tree, split.a, &leaves[1..], Axis::X)
+            split.b() == leaves[0]
+                && tree.is_leaf(split.b())
+                && matches_equal_linear(tree, split.a(), &leaves[1..], Axis::X)
         }
     }
 }
@@ -343,11 +412,11 @@ fn matches_equal_linear<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], axis: 
     let Some(split) = tree.split(id) else {
         return false;
     };
-    split.axis == axis
-        && split.weights == canonicalize_weights(1, (leaves.len() - 1) as u32)
-        && split.a == leaves[0]
-        && tree.is_leaf(split.a)
-        && matches_equal_linear(tree, split.b, &leaves[1..], axis)
+    split.axis() == axis
+        && split.weights() == canonicalize_weights(1, (leaves.len() - 1) as u32)
+        && split.a() == leaves[0]
+        && tree.is_leaf(split.a())
+        && matches_equal_linear(tree, split.b(), &leaves[1..], axis)
 }
 
 fn new_internal_split<T>(
@@ -361,19 +430,4 @@ fn new_internal_split<T>(
     tree.set_parent(a, Some(split_id));
     tree.set_parent(b, Some(split_id));
     split_id
-}
-
-fn toggle_axis(axis: Axis) -> Axis {
-    match axis {
-        Axis::X => Axis::Y,
-        Axis::Y => Axis::X,
-    }
-}
-
-fn checked_weights(weights: WeightPair) -> Result<WeightPair, OpError> {
-    if weights.a == 0 && weights.b == 0 {
-        Err(OpError::InvalidWeights)
-    } else {
-        Ok(weights)
-    }
 }

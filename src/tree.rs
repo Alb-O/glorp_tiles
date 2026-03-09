@@ -3,44 +3,104 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::ValidationError,
+    error::{OpError, ValidationError},
     geom::{Axis, Slot},
     ids::NodeId,
-    limits::{LeafMeta, WeightPair},
+    limits::{LeafMeta, WeightPair, canonicalize_weights},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeafNode<T> {
-    pub parent: Option<NodeId>,
-    pub payload: T,
-    pub meta: LeafMeta,
+    parent: Option<NodeId>,
+    payload: T,
+    meta: LeafMeta,
+}
+
+impl<T> LeafNode<T> {
+    #[must_use]
+    pub fn parent(&self) -> Option<NodeId> {
+        self.parent
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &T {
+        &self.payload
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &LeafMeta {
+        &self.meta
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitNode {
-    pub parent: Option<NodeId>,
-    pub axis: Axis,
-    pub a: NodeId,
-    pub b: NodeId,
-    pub weights: WeightPair,
+    parent: Option<NodeId>,
+    axis: Axis,
+    a: NodeId,
+    b: NodeId,
+    weights: WeightPair,
+}
+
+impl SplitNode {
+    #[must_use]
+    pub fn parent(&self) -> Option<NodeId> {
+        self.parent
+    }
+
+    #[must_use]
+    pub fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    #[must_use]
+    pub fn a(&self) -> NodeId {
+        self.a
+    }
+
+    #[must_use]
+    pub fn b(&self) -> NodeId {
+        self.b
+    }
+
+    #[must_use]
+    pub fn weights(&self) -> WeightPair {
+        self.weights
+    }
+
+    pub(crate) fn set_axis(&mut self, axis: Axis) {
+        self.axis = axis;
+    }
+
+    pub(crate) fn set_weights(&mut self, weights: WeightPair) {
+        self.weights = weights;
+    }
+
+    pub(crate) fn swap_children(&mut self) {
+        std::mem::swap(&mut self.a, &mut self.b);
+    }
+
+    pub(crate) fn swap_weights(&mut self) {
+        std::mem::swap(&mut self.weights.a, &mut self.weights.b);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Node<T> {
+pub(crate) enum Node<T> {
     Leaf(LeafNode<T>),
     Split(SplitNode),
 }
 
 impl<T> Node<T> {
     #[must_use]
-    pub fn parent(&self) -> Option<NodeId> {
+    fn parent(&self) -> Option<NodeId> {
         match self {
             Self::Leaf(leaf) => leaf.parent,
             Self::Split(split) => split.parent,
         }
     }
 
-    pub fn parent_mut(&mut self) -> &mut Option<NodeId> {
+    fn parent_mut(&mut self) -> &mut Option<NodeId> {
         match self {
             Self::Leaf(leaf) => &mut leaf.parent,
             Self::Split(split) => &mut split.parent,
@@ -48,7 +108,7 @@ impl<T> Node<T> {
     }
 
     #[must_use]
-    pub fn as_split(&self) -> Option<&SplitNode> {
+    fn as_split(&self) -> Option<&SplitNode> {
         match self {
             Self::Split(split) => Some(split),
             Self::Leaf(_) => None,
@@ -56,7 +116,7 @@ impl<T> Node<T> {
     }
 
     #[must_use]
-    pub fn as_split_mut(&mut self) -> Option<&mut SplitNode> {
+    fn as_split_mut(&mut self) -> Option<&mut SplitNode> {
         match self {
             Self::Split(split) => Some(split),
             Self::Leaf(_) => None,
@@ -64,7 +124,7 @@ impl<T> Node<T> {
     }
 
     #[must_use]
-    pub fn as_leaf(&self) -> Option<&LeafNode<T>> {
+    fn as_leaf(&self) -> Option<&LeafNode<T>> {
         match self {
             Self::Leaf(leaf) => Some(leaf),
             Self::Split(_) => None,
@@ -101,38 +161,38 @@ impl<T> Tree<T> {
     }
 
     #[must_use]
-    pub fn node(&self, id: NodeId) -> Option<&Node<T>> {
-        self.nodes.get(&id)
-    }
-
-    #[must_use]
     pub fn split(&self, id: NodeId) -> Option<&SplitNode> {
-        self.node(id).and_then(Node::as_split)
+        self.nodes.get(&id).and_then(Node::as_split)
     }
 
     #[must_use]
     pub fn leaf(&self, id: NodeId) -> Option<&LeafNode<T>> {
-        self.node(id).and_then(Node::as_leaf)
+        self.nodes.get(&id).and_then(Node::as_leaf)
     }
 
     #[must_use]
     pub fn node_ids(&self) -> Vec<NodeId> {
-        self.nodes.keys().copied().collect()
+        let mut ids = self.nodes.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
     }
 
     #[must_use]
     pub fn split_ids(&self) -> Vec<NodeId> {
-        self.nodes
+        let mut ids = self
+            .nodes
             .iter()
             .filter_map(|(id, node)| matches!(node, Node::Split(_)).then_some(*id))
-            .collect()
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
     }
 
-    pub fn set_root(&mut self, root: Option<NodeId>) {
+    pub(crate) fn set_root(&mut self, root: Option<NodeId>) {
         self.root = root;
     }
 
-    pub(crate) fn split_mut(&mut self, id: NodeId) -> Option<&mut SplitNode> {
+    fn split_mut(&mut self, id: NodeId) -> Option<&mut SplitNode> {
         self.nodes.get_mut(&id).and_then(Node::as_split_mut)
     }
 
@@ -250,7 +310,7 @@ impl<T> Tree<T> {
         self.nodes.get(&id).and_then(Node::parent)
     }
 
-    pub fn new_leaf(&mut self, payload: T, meta: LeafMeta) -> NodeId {
+    pub(crate) fn new_leaf(&mut self, payload: T, meta: LeafMeta) -> NodeId {
         let id = self.alloc_id();
         self.nodes.insert(
             id,
@@ -263,7 +323,13 @@ impl<T> Tree<T> {
         id
     }
 
-    pub fn new_split(&mut self, axis: Axis, a: NodeId, b: NodeId, weights: WeightPair) -> NodeId {
+    pub(crate) fn new_split(
+        &mut self,
+        axis: Axis,
+        a: NodeId,
+        b: NodeId,
+        weights: WeightPair,
+    ) -> NodeId {
         let id = self.alloc_id();
         self.nodes.insert(
             id,
@@ -278,7 +344,7 @@ impl<T> Tree<T> {
         id
     }
 
-    pub fn set_parent(&mut self, id: NodeId, parent: Option<NodeId>) {
+    pub(crate) fn set_parent(&mut self, id: NodeId, parent: Option<NodeId>) {
         *self
             .nodes
             .get_mut(&id)
@@ -286,7 +352,7 @@ impl<T> Tree<T> {
             .parent_mut() = parent;
     }
 
-    pub fn replace_child(&mut self, parent: NodeId, old: NodeId, new: NodeId) {
+    pub(crate) fn replace_child(&mut self, parent: NodeId, old: NodeId, new: NodeId) {
         let split = self
             .nodes
             .get_mut(&parent)
@@ -300,16 +366,6 @@ impl<T> Tree<T> {
             panic!("old child not found under parent");
         }
         self.set_parent(new, Some(parent));
-    }
-
-    pub fn replace_node_in_parent_or_root(&mut self, old: NodeId, new: NodeId) {
-        match self.parent_of(old) {
-            Some(parent) => self.replace_child(parent, old, new),
-            None => {
-                self.root = Some(new);
-                self.set_parent(new, None);
-            }
-        }
     }
 
     pub fn children_of(&self, id: NodeId) -> Option<(NodeId, NodeId)> {
@@ -384,6 +440,37 @@ impl<T> Tree<T> {
         out
     }
 
+    #[must_use]
+    /// Returns split ids in subtree postorder, with descendants before ancestors.
+    ///
+    /// The subtree root split, if present, is returned last. This order is
+    /// intended for bottom-up teardown and rewrite paths.
+    pub fn split_ids_postorder(&self, root: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        self.collect_split_ids(root, &mut out);
+        out
+    }
+
+    #[must_use]
+    fn remaining_subtree_after_removal(&self, current: NodeId, removed: NodeId) -> Option<NodeId> {
+        if current == removed {
+            return None;
+        }
+        if self.leaf(current).is_some() {
+            Some(current)
+        } else {
+            let split = self.split(current)?;
+            match (
+                self.remaining_subtree_after_removal(split.a, removed),
+                self.remaining_subtree_after_removal(split.b, removed),
+            ) {
+                (Some(_), Some(_)) => Some(current),
+                (Some(id), None) | (None, Some(id)) => Some(id),
+                (None, None) => None,
+            }
+        }
+    }
+
     fn collect_leaf_ids(&self, id: NodeId, out: &mut Vec<NodeId>) {
         match self
             .nodes
@@ -398,7 +485,15 @@ impl<T> Tree<T> {
         }
     }
 
-    pub fn swap_parent_slots(&mut self, parent: NodeId) {
+    fn collect_split_ids(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        if let Some((a, b)) = self.children_of(id) {
+            self.collect_split_ids(a, out);
+            self.collect_split_ids(b, out);
+            out.push(id);
+        }
+    }
+
+    fn swap_parent_slots(&mut self, parent: NodeId) {
         let split = self
             .nodes
             .get_mut(&parent)
@@ -407,7 +502,54 @@ impl<T> Tree<T> {
         std::mem::swap(&mut split.a, &mut split.b);
     }
 
-    pub fn collapse_unary_parent(&mut self, removed_child: NodeId) -> Option<NodeId> {
+    pub(crate) fn toggle_split_axis(&mut self, id: NodeId) -> Option<()> {
+        let split = self.split_mut(id)?;
+        split.set_axis(split.axis().toggled());
+        Some(())
+    }
+
+    pub(crate) fn set_split_weights(&mut self, id: NodeId, weights: WeightPair) -> Option<()> {
+        let split = self.split_mut(id)?;
+        split.set_weights(weights);
+        Some(())
+    }
+
+    pub(crate) fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Option<()> {
+        if self.leaf(id).is_some() {
+            return Some(());
+        }
+        let (a, b) = self.children_of(id)?;
+        self.rebalance_subtree_binary_equal(a)?;
+        self.rebalance_subtree_binary_equal(b)?;
+        self.set_split_weights(id, WeightPair::default())
+    }
+
+    pub(crate) fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Option<u32> {
+        if self.leaf(id).is_some() {
+            return Some(1);
+        }
+        let (a, b) = self.children_of(id)?;
+        let count_a = self.rebalance_subtree_leaf_count(a)?;
+        let count_b = self.rebalance_subtree_leaf_count(b)?;
+        self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
+        Some(count_a + count_b)
+    }
+
+    pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) {
+        let children = match self.children_of(id) {
+            Some(children) => children,
+            None => return,
+        };
+        self.mirror_subtree_axis(children.0, axis);
+        self.mirror_subtree_axis(children.1, axis);
+        let split = self.split_mut(id).expect("split missing during mirror");
+        if split.axis() == axis {
+            split.swap_children();
+            split.swap_weights();
+        }
+    }
+
+    fn collapse_unary_parent(&mut self, removed_child: NodeId) -> Option<NodeId> {
         let parent = self.parent_of(removed_child)?;
         let sibling = self.sibling_of(removed_child)?;
         let grand = self.parent_of(parent);
@@ -421,26 +563,47 @@ impl<T> Tree<T> {
         Some(sibling)
     }
 
-    pub fn remove_subtree_ids(&mut self, id: NodeId) -> Vec<NodeId> {
-        let mut removed = Vec::new();
-        self.collect_remove(id, &mut removed);
-        removed
+    pub(crate) fn remove_leaf_and_collapse(&mut self, leaf: NodeId) -> Option<Option<NodeId>> {
+        if !self.is_leaf(leaf) {
+            return None;
+        }
+        if self.root_id() == Some(leaf) {
+            self.set_root(None);
+            self.remove_node(leaf)?;
+            return Some(None);
+        }
+        let sibling = self.sibling_of(leaf)?;
+        let replacement = self.collapse_unary_parent(leaf).unwrap_or(sibling);
+        self.remove_node(leaf)?;
+        Some(Some(replacement))
     }
 
-    fn collect_remove(&mut self, id: NodeId, removed: &mut Vec<NodeId>) {
-        if let Some(node) = self.nodes.remove(&id) {
-            match node {
-                Node::Leaf(_) => removed.push(id),
-                Node::Split(split) => {
-                    self.collect_remove(split.a, removed);
-                    self.collect_remove(split.b, removed);
-                    removed.push(id);
-                }
+    pub(crate) fn swap_disjoint_nodes(&mut self, a: NodeId, b: NodeId) -> Option<()> {
+        let parent_a = self.parent_of(a);
+        let parent_b = self.parent_of(b);
+        if parent_a == parent_b {
+            let parent = parent_a?;
+            self.swap_parent_slots(parent);
+            return Some(());
+        }
+        match parent_a {
+            Some(parent) => self.replace_child(parent, a, b),
+            None => {
+                self.set_root(Some(b));
+                self.set_parent(b, None);
             }
         }
+        match parent_b {
+            Some(parent) => self.replace_child(parent, b, a),
+            None => {
+                self.set_root(Some(a));
+                self.set_parent(a, None);
+            }
+        }
+        Some(())
     }
 
-    pub fn detach_subtree(&mut self, id: NodeId) {
+    fn detach_subtree(&mut self, id: NodeId) {
         if self.root == Some(id) {
             self.root = None;
             self.set_parent(id, None);
@@ -461,7 +624,7 @@ impl<T> Tree<T> {
         self.set_parent(id, None);
     }
 
-    pub fn attach_as_sibling(
+    pub(crate) fn attach_as_sibling(
         &mut self,
         target: NodeId,
         incoming: NodeId,
@@ -480,7 +643,6 @@ impl<T> Tree<T> {
         match parent_of_target {
             Some(parent) => {
                 self.replace_child(parent, target, split_id);
-                self.set_parent(split_id, Some(parent));
             }
             None => {
                 self.root = Some(split_id);
@@ -490,9 +652,91 @@ impl<T> Tree<T> {
         split_id
     }
 
+    pub(crate) fn move_subtree_as_sibling_of(
+        &mut self,
+        selection: NodeId,
+        target: NodeId,
+        axis: Axis,
+        slot: Slot,
+        weights: WeightPair,
+    ) -> Result<NodeId, OpError> {
+        if selection == target {
+            return Err(OpError::SameNode);
+        }
+        if !self.contains(selection) {
+            return Err(OpError::MissingNode(selection));
+        }
+        if !self.contains(target) {
+            return Err(OpError::MissingNode(target));
+        }
+        if self.contains_in_subtree(selection, target) {
+            return Err(OpError::TargetInsideSelection);
+        }
+
+        let effective_target = self
+            .remaining_subtree_after_removal(target, selection)
+            .ok_or(OpError::AncestorConflict)?;
+        self.detach_subtree(selection);
+        Ok(self.attach_as_sibling(effective_target, selection, axis, slot, weights))
+    }
+
     fn alloc_id(&mut self) -> NodeId {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_child_sets_new_child_parent_in_non_root_path() {
+        let mut tree = Tree::default();
+        let a = tree.new_leaf(1_u8, LeafMeta::default());
+        let b = tree.new_leaf(2_u8, LeafMeta::default());
+        let c = tree.new_leaf(3_u8, LeafMeta::default());
+        let d = tree.new_leaf(4_u8, LeafMeta::default());
+        let inner = tree.new_split(Axis::X, a, b, WeightPair::default());
+        tree.set_parent(a, Some(inner));
+        tree.set_parent(b, Some(inner));
+        let root = tree.new_split(Axis::Y, inner, d, WeightPair::default());
+        tree.set_parent(inner, Some(root));
+        tree.set_parent(d, Some(root));
+        tree.set_root(Some(root));
+
+        let replacement = tree.attach_as_sibling(a, c, Axis::Y, Slot::A, WeightPair::default());
+
+        assert_eq!(tree.parent_of(replacement), Some(inner));
+        assert_eq!(tree.parent_of(a), Some(replacement));
+        assert_eq!(tree.parent_of(c), Some(replacement));
+        tree.validate().expect("replace_child should set parent");
+    }
+
+    #[test]
+    fn swap_disjoint_nodes_non_root_paths_preserve_parent_links() {
+        let mut tree = Tree::default();
+        let a = tree.new_leaf(1_u8, LeafMeta::default());
+        let b = tree.new_leaf(2_u8, LeafMeta::default());
+        let c = tree.new_leaf(3_u8, LeafMeta::default());
+        let d = tree.new_leaf(4_u8, LeafMeta::default());
+        let left = tree.new_split(Axis::X, a, b, WeightPair::default());
+        tree.set_parent(a, Some(left));
+        tree.set_parent(b, Some(left));
+        let right = tree.new_split(Axis::X, c, d, WeightPair::default());
+        tree.set_parent(c, Some(right));
+        tree.set_parent(d, Some(right));
+        let root = tree.new_split(Axis::Y, left, right, WeightPair::default());
+        tree.set_parent(left, Some(root));
+        tree.set_parent(right, Some(root));
+        tree.set_root(Some(root));
+
+        tree.swap_disjoint_nodes(a, c)
+            .expect("swap between non-root leaves should succeed");
+
+        assert_eq!(tree.parent_of(a), Some(right));
+        assert_eq!(tree.parent_of(c), Some(left));
+        tree.validate().expect("swap should preserve parent links");
     }
 }
