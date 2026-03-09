@@ -42,6 +42,50 @@ assert!(solved.strict_feasible);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Interactive demo
+
+Run the line-oriented interactive demo with:
+
+```bash
+cargo run --example interactive
+```
+
+It demonstrates focus and selection targeting, structural edits, geometry-driven
+navigation and resize, subtree presets and transforms, and a live re-solve and
+re-render after each successful command.
+
+Command groups:
+
+- `general`: `help`, `print`, `quit|exit`, `reset`, `size <w> <h>`
+- `targeting`: `focus left|right|up|down`, `select parent`, `select focus`
+- `structure`: `split x|y a|b [label]`, `wrap x|y a|b [label]`, `remove`
+- `resize`: `grow ...`, `shrink ...`
+- `subtree`: `preset ...`, `rebalance ...`, `toggle-axis`, `mirror x|y`
+
+Short demo transcript:
+
+```text
+help
+split x b aux
+focus right
+select parent
+preset tall a 3 2
+grow left 8 chain
+print
+quit
+```
+
+The demo re-solves after each successful command and prints the current tree
+plus solved leaf rectangles.
+
+Behavior notes:
+
+- subtree operations target the current `selection`, not necessarily the
+  focused leaf
+- geometry-driven commands solve fresh from the current root size before acting
+- some leaf-targeted subtree operations are no-ops or errors according to the
+  library API
+
 ## Presets and rebalancing
 
 Included subtree rebuild presets:
