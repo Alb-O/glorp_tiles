@@ -1,3 +1,22 @@
+//! Focus-aware state machine layered on top of a validated [`Tree`].
+//!
+//! [`Session`] owns a tree plus focus, selection, and a monotonic revision counter. Operations
+//! that rewrite structure or weights bump the revision, while targeting-only changes do not.
+//! Geometry-driven commands such as navigation and resize require a fresh [`Snapshot`] whose
+//! revision matches the current session revision.
+//!
+//! ```text
+//!             [root]
+//!             /    \
+//!         [left]  [right]
+//!          /  \
+//!       [a]  [b]
+//!
+//! focus = b
+//! valid selection = b | left | root
+//! invalid selection = a | any node not containing b
+//! ```
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -15,12 +34,34 @@ use crate::{
     tree::Tree,
 };
 
+/// Rebalancing policy for the currently selected subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RebalanceMode {
+    /// Reset every split in the selected subtree to equal `1:1` weights.
     BinaryEqual,
+    /// Reset every split in the selected subtree using descendant leaf counts.
     LeafCount,
 }
 
+/// Mutable editing session over a validated tiling tree.
+///
+/// Session invariants:
+///
+/// - an empty tree has `focus == None` and `selection == None`
+/// - a non-empty session always has a focused leaf
+/// - selection is either that focused leaf or a split that contains it
+///
+/// ```
+/// use libtiler::{Axis, LeafMeta, Rect, Session, Slot, SolverPolicy};
+///
+/// let mut session = Session::new();
+/// session.insert_root("main", LeafMeta::default())?;
+/// session.split_focus(Axis::X, Slot::B, "side", LeafMeta::default(), None)?;
+///
+/// let snapshot = session.solve(Rect { x: 0, y: 0, w: 120, h: 40 }, &SolverPolicy::default());
+/// assert_eq!(snapshot.node_rects.len(), 3);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session<T> {
     tree: Tree<T>,
@@ -41,11 +82,13 @@ impl<T> Default for Session<T> {
 }
 
 impl<T> Session<T> {
+    /// Creates an empty session.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Validates both the underlying tree and the session targeting invariants.
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.tree.validate()?;
         match self.tree.root_id() {
@@ -82,36 +125,71 @@ impl<T> Session<T> {
         }
     }
 
+    /// Solves the current tree into a snapshot tagged with the current revision.
+    ///
+    /// This is the infallible convenience wrapper over [`Self::try_solve`]. It does not mutate the
+    /// session.
+    ///
+    /// ```text
+    /// edit tree/weights
+    ///     |
+    ///     v
+    /// revision += 1
+    ///     |
+    ///     v
+    /// solve(root, policy) -> Snapshot { revision = N }
+    ///   -> focus_dir(..., snapshot N)   OK
+    ///   -> grow_focus(..., snapshot N)  OK
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if session invariants have been broken badly enough that solving unexpectedly fails.
     #[must_use]
     pub fn solve(&self, root: Rect, policy: &SolverPolicy) -> Snapshot {
         self.try_solve(root, policy)
             .expect("session should maintain a valid and representable tree")
     }
 
+    /// Solves the current tree into a snapshot tagged with the current revision.
+    ///
+    /// Unlike [`Self::solve`], this returns [`SolveError`] instead of panicking when validation or
+    /// solving fails. Solving never mutates the session.
     pub fn try_solve(&self, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
         crate::solver::solve_with_revision(&self.tree, root, self.revision, policy)
     }
 
+    /// Returns the underlying tree.
     #[must_use]
     pub fn tree(&self) -> &Tree<T> {
         &self.tree
     }
 
+    /// Returns the currently focused leaf id, if any.
+    ///
+    /// In a valid non-empty session this is always `Some(leaf_id)`.
     #[must_use]
     pub fn focus(&self) -> Option<NodeId> {
         self.focus
     }
 
+    /// Returns the current selection.
+    ///
+    /// In a valid non-empty session this is either the focused leaf or a split containing it.
     #[must_use]
     pub fn selection(&self) -> Option<NodeId> {
         self.selection
     }
 
+    /// Returns the current session revision.
     #[must_use]
     pub fn revision(&self) -> Revision {
         self.revision
     }
 
+    /// Moves focus to an existing leaf and repairs selection to keep containing it.
+    ///
+    /// This does not bump the revision.
     pub fn set_focus_leaf(&mut self, id: NodeId) -> Result<(), OpError> {
         let old_focus = self.focus;
         let old_selection = self.selection;
@@ -126,6 +204,10 @@ impl<T> Session<T> {
             })
     }
 
+    /// Sets the current selection.
+    ///
+    /// Selecting a leaf also moves focus to that leaf. Selecting a split requires the current
+    /// focused leaf to already lie inside that split. This does not bump the revision.
     pub fn set_selection(&mut self, id: NodeId) -> Result<(), OpError> {
         let old_focus = self.focus;
         let old_selection = self.selection;
@@ -148,6 +230,9 @@ impl<T> Session<T> {
             })
     }
 
+    /// Inserts the first root leaf into an empty session.
+    ///
+    /// The inserted leaf becomes both focus and selection.
     pub fn insert_root(&mut self, payload: T, meta: LeafMeta) -> Result<NodeId, OpError> {
         if self.tree.root_id().is_some() {
             return Err(OpError::NonEmpty);
@@ -161,6 +246,11 @@ impl<T> Session<T> {
         Ok(id)
     }
 
+    /// Splits the focused leaf by inserting a new sibling.
+    ///
+    /// Returns the new leaf id. The existing focused leaf remains focused when it survives, and
+    /// selection is repaired to continue containing the focused leaf. Invalid weight pairs such as
+    /// `(0, 0)` are rejected.
     pub fn split_focus(
         &mut self,
         axis: Axis,
@@ -185,6 +275,10 @@ impl<T> Session<T> {
         Ok(new_leaf)
     }
 
+    /// Wraps the current selection together with a newly inserted sibling leaf.
+    ///
+    /// The focused leaf is preserved when it survives, and selection is repaired to continue
+    /// containing that focus. Invalid weight pairs such as `(0, 0)` are rejected.
     pub fn wrap_selection(
         &mut self,
         axis: Axis,
@@ -213,6 +307,11 @@ impl<T> Session<T> {
         Ok(new_leaf)
     }
 
+    /// Removes the focused leaf and collapses any unary parent created by that removal.
+    ///
+    /// Removing the last remaining root leaf empties the session. Otherwise focus falls back
+    /// deterministically to the first leaf at the replacement site, and selection is repaired to
+    /// continue containing that focus when possible.
     pub fn remove_focus(&mut self) -> Result<(), OpError> {
         let focus = self.require_focus_leaf()?;
         let old_selection = self.selection;
@@ -226,6 +325,10 @@ impl<T> Session<T> {
         Ok(())
     }
 
+    /// Swaps two distinct, structurally disjoint nodes.
+    ///
+    /// Same-node swaps and ancestor/descendant swaps are rejected. Focus is preserved when its leaf
+    /// survives, and selection is repaired afterward.
     pub fn swap_nodes(&mut self, a: NodeId, b: NodeId) -> Result<(), OpError> {
         if a == b {
             return Err(OpError::SameNode);
@@ -246,6 +349,12 @@ impl<T> Session<T> {
         Ok(())
     }
 
+    /// Moves the selected subtree so it becomes a sibling of `target`.
+    ///
+    /// The selected subtree may be moved next to an ancestor target; the session first computes the
+    /// target that remains after detaching the selection. Moving onto the same node or inside the
+    /// selected subtree is rejected. Focus is preserved when its leaf survives, and selection is
+    /// repaired to continue referring to the moved subtree when possible.
     pub fn move_selection_as_sibling_of(
         &mut self,
         target: NodeId,
@@ -268,6 +377,10 @@ impl<T> Session<T> {
         Ok(())
     }
 
+    /// Moves focus to the best solved leaf neighbor in `dir`.
+    ///
+    /// The supplied snapshot must be fresh for the current revision. On success this updates focus,
+    /// repairs selection to keep containing the new focus, and does not bump the revision.
     pub fn focus_dir(&mut self, dir: Direction, snap: &Snapshot) -> Result<(), NavError> {
         self.ensure_fresh_snapshot(snap).map_err(|error| {
             map_op_to_nav(error).expect("focus_dir should only map nav-compatible op errors")
@@ -281,6 +394,11 @@ impl<T> Session<T> {
         self.validate().map_err(NavError::Validation)
     }
 
+    /// Promotes the current selection to its parent split.
+    ///
+    /// If a selection already exists it is used as the base; otherwise the focused leaf is used.
+    /// Selecting the root has no parent and returns [`OpError::NoParent`]. This does not bump the
+    /// revision.
     pub fn select_parent(&mut self) -> Result<(), OpError> {
         let base = self.selection.or(self.focus).ok_or(OpError::Empty)?;
         let parent = self.tree.parent_of(base).ok_or(OpError::NoParent(base))?;
@@ -288,10 +406,19 @@ impl<T> Session<T> {
         self.validate().map_err(OpError::Validation)
     }
 
+    /// Collapses the selection back to the current focus.
+    ///
+    /// This is a targeting-only change and does not bump the revision.
     pub fn select_focus(&mut self) {
         self.selection = self.focus;
     }
 
+    /// Attempts to grow the focused leaf outward in `dir`.
+    ///
+    /// The supplied snapshot must be fresh for the current revision. `amount == 0` is a no-op, and
+    /// requests with no eligible split are also no-ops. Successful calls with at least one eligible
+    /// split bump the revision after attempting the resize, even if slack clamped every resulting
+    /// delta to zero.
     pub fn grow_focus(
         &mut self,
         dir: Direction,
@@ -302,6 +429,12 @@ impl<T> Session<T> {
         self.resize_focus(dir, amount, strategy, snap, true)
     }
 
+    /// Attempts to shrink the focused leaf inward from `dir`.
+    ///
+    /// The supplied snapshot must be fresh for the current revision. `amount == 0` is a no-op, and
+    /// requests with no eligible split are also no-ops. Successful calls with at least one eligible
+    /// split bump the revision after attempting the resize, even if slack clamped every resulting
+    /// delta to zero.
     pub fn shrink_focus(
         &mut self,
         dir: Direction,
@@ -312,6 +445,9 @@ impl<T> Session<T> {
         self.resize_focus(dir, amount, strategy, snap, false)
     }
 
+    /// Toggles the axis of the currently selected split.
+    ///
+    /// Selecting a leaf returns [`OpError::NotSplit`].
     pub fn toggle_axis(&mut self) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
         self.tree
@@ -321,6 +457,10 @@ impl<T> Session<T> {
         self.validate().map_err(OpError::Validation)
     }
 
+    /// Mirrors the selected subtree across `axis`.
+    ///
+    /// Leaf selections are a structural no-op, but the operation still succeeds and bumps the
+    /// revision.
     pub fn mirror_selection(&mut self, axis: Axis) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
         self.tree.mirror_subtree_axis(selection, axis);
@@ -328,6 +468,10 @@ impl<T> Session<T> {
         self.validate().map_err(OpError::Validation)
     }
 
+    /// Rebalances split weights within the selected subtree according to `mode`.
+    ///
+    /// Selecting a leaf currently behaves as a no-op in the underlying tree implementation, but
+    /// the operation still succeeds and bumps the revision.
     pub fn rebalance_selection(&mut self, mode: RebalanceMode) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
         match mode {
@@ -345,6 +489,12 @@ impl<T> Session<T> {
         self.validate().map_err(OpError::Validation)
     }
 
+    /// Rebuilds the selected subtree to match `preset`.
+    ///
+    /// Leaf selections and selections that already match `preset` are no-ops and do not bump the
+    /// revision. Successful preset application preserves existing leaf ids, payloads, and metadata,
+    /// rebuilds split structure as needed, preserves the focused leaf when it survives, and
+    /// retargets selection to the rebuilt subtree root.
     pub fn apply_preset(&mut self, preset: PresetKind) -> Result<(), OpError> {
         let selection = self.selection.ok_or(OpError::Empty)?;
         let focus = self.require_focus_leaf()?;

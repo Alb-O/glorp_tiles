@@ -1,3 +1,10 @@
+//! Deterministic best-effort solver for binary split trees.
+//!
+//! Solving proceeds in two phases: [`summarize`] computes the exact feasible envelope of each
+//! subtree, then the solver chooses an extent for every split by lexicographically minimizing a
+//! scored allocation problem. Non-strict entry points always return a full [`Snapshot`] for valid
+//! trees, while strict entry points reject any solve that records hard-limit violations.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -11,27 +18,42 @@ use crate::{
     tree::Tree,
 };
 
+/// Strategy for pricing shortage below child minimum extents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShortageMode {
+    /// Count each missing unit equally, regardless of per-leaf priority.
     Equal,
+    /// Weight each missing unit by the subtree's aggregate shrink priority.
     ByShrinkPriority,
 }
 
+/// Strategy for pricing overflow beyond child maximum extents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverflowMode {
+    /// Count overflow units uniformly.
     Uniform,
 }
 
+/// Final deterministic tie-break preference when earlier score components tie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TieBreakMode {
+    /// Prefer giving more extent to child `A`.
     PreferA,
+    /// Prefer giving more extent to child `B`.
     PreferB,
 }
 
+/// Solver configuration.
+///
+/// The default policy favors respecting shrink priorities, counts overflow uniformly, and breaks
+/// perfect ties toward child `A` for deterministic repeatability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolverPolicy {
+    /// How shortage below minimum extents is priced.
     pub shortage_mode: ShortageMode,
+    /// How overflow above maximum extents is priced.
     pub overflow_mode: OverflowMode,
+    /// Deterministic preference when earlier score components tie.
     pub tie_break: TieBreakMode,
 }
 
@@ -45,19 +67,38 @@ impl Default for SolverPolicy {
     }
 }
 
+/// Fully materialized single-split allocation problem.
+///
+/// This captures the total extent available on one axis, the child minimum and optional maximum
+/// extents on that axis, preferred weights, and subtree shortage costs. Callers are expected to
+/// supply a valid non-zero weight pair; `(0, 0)` is outside the contract even though it is not
+/// revalidated here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairSpec {
+    /// Total extent available to the split on the chosen axis.
     pub total: u32,
+    /// Minimum feasible extent for child `A`.
     pub min_a: u32,
+    /// Minimum feasible extent for child `B`.
     pub min_b: u32,
+    /// Maximum feasible extent for child `A`, if bounded.
     pub max_a: Option<u32>,
+    /// Maximum feasible extent for child `B`, if bounded.
     pub max_b: Option<u32>,
+    /// Relative weight preference for child `A`.
     pub wa: u32,
+    /// Relative weight preference for child `B`.
     pub wb: u32,
+    /// Aggregate shortage cost for child `A`.
     pub sa: u64,
+    /// Aggregate shortage cost for child `B`.
     pub sb: u64,
 }
 
+/// Chooses an extent for child `A` from raw split inputs.
+///
+/// This is a convenience wrapper around [`choose_extent_with_score`] that returns only the chosen
+/// extent.
 #[must_use]
 pub fn choose_extent(
     total: u32,
@@ -82,6 +123,10 @@ pub fn choose_extent(
     choose_extent_with_score(spec, policy).0
 }
 
+/// Chooses an extent for child `A` and returns the corresponding lexicographic score.
+///
+/// The current implementation exhaustively searches `0..=total`, computes [`score`] for each
+/// candidate, and returns the deterministic minimum over `(score, tie-break key)`.
 #[must_use]
 pub fn choose_extent_with_score(spec: PairSpec, policy: &SolverPolicy) -> (u32, ScoreTuple) {
     (0..=spec.total)
@@ -105,6 +150,14 @@ fn tie_break_key(a: u32, total: u32, mode: TieBreakMode, fallback: u128) -> u128
     }
 }
 
+/// Scores a candidate allocation for child `A`.
+///
+/// The returned [`ScoreTuple`] is compared lexicographically in this order:
+///
+/// 1. shortage penalty
+/// 2. overflow penalty
+/// 3. preference penalty
+/// 4. tie-break
 #[must_use]
 pub fn score(spec: PairSpec, a: u32, policy: &SolverPolicy) -> ScoreTuple {
     let size_a = a;
@@ -142,10 +195,20 @@ fn pref_penalty(total: u32, a: u32, wa: u32, wb: u32) -> u128 {
     left.abs_diff(right)
 }
 
+/// Solves `tree` into a best-effort snapshot with revision `0`.
+///
+/// The tree is validated before solving. For valid trees this returns a full [`Snapshot`] even
+/// when some solved leaves violate hard limits; inspect [`Snapshot::strict_feasible`] and
+/// [`Snapshot::violations`] to distinguish strict feasibility from best effort.
 pub fn solve<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
     solve_with_revision(tree, root, 0, policy)
 }
 
+/// Solves `tree` into a best-effort snapshot tagged with `revision`.
+///
+/// This differs from [`solve`] only in the stored [`Snapshot::revision`]. The tree is validated
+/// before solving. For valid trees this returns a full [`Snapshot`] even when some solved leaves
+/// violate hard limits; strict feasibility is reported through [`Snapshot::strict_feasible`].
 pub fn solve_with_revision<T>(
     tree: &Tree<T>,
     root: Rect,
@@ -171,6 +234,37 @@ pub fn solve_with_revision<T>(
     Ok(snapshot)
 }
 
+/// Solves `tree` and rejects any hard-limit violation.
+///
+/// This validates first, then delegates to [`solve`]. A valid tree whose best-effort solve
+/// produces any violation returns [`SolveError::Infeasible`].
+///
+/// ```
+/// use libtiler::{
+///     solve, solve_strict, Axis, LeafMeta, Rect, Session, SizeLimits, Slot, SolveError,
+///     SolverPolicy,
+/// };
+///
+/// let tight = LeafMeta {
+///     limits: SizeLimits {
+///         min_w: 5,
+///         ..SizeLimits::default()
+///     },
+///     ..LeafMeta::default()
+/// };
+/// let mut session = Session::new();
+/// session.insert_root("a", tight.clone())?;
+/// session.split_focus(Axis::X, Slot::B, "b", tight, None)?;
+///
+/// let root = Rect { x: 0, y: 0, w: 8, h: 4 };
+/// let snapshot = solve(session.tree(), root, &SolverPolicy::default())?;
+/// assert!(!snapshot.strict_feasible);
+/// assert_eq!(
+///     solve_strict(session.tree(), root, &SolverPolicy::default()),
+///     Err(SolveError::Infeasible)
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn solve_strict<T>(
     tree: &Tree<T>,
     root: Rect,
@@ -184,6 +278,9 @@ pub fn solve_strict<T>(
     }
 }
 
+/// Strict solve variant that tags the returned snapshot with `revision`.
+///
+/// This differs from [`solve_strict`] only in the stored [`Snapshot::revision`].
 pub fn solve_strict_with_revision<T>(
     tree: &Tree<T>,
     root: Rect,
@@ -198,6 +295,11 @@ pub fn solve_strict_with_revision<T>(
     }
 }
 
+/// Computes the exact bottom-up summary envelope for the subtree rooted at `id`.
+///
+/// The resulting [`Summary`] captures minimum and optional maximum extents, leaf count, and
+/// aggregate cost weights for the entire subtree. Results are memoized into `out`. Arithmetic
+/// overflow while combining subtree values is reported as [`ValidationError::ArithmeticOverflow`].
 pub fn summarize<T>(
     tree: &Tree<T>,
     id: NodeId,

@@ -1,3 +1,26 @@
+//! Validated binary split topology with semantic node accessors.
+//!
+//! [`Tree`] stores a single-root binary split tree whose public API exposes read-only semantic
+//! views such as [`LeafNode`] and [`SplitNode`] rather than the internal node enum or storage map.
+//! A valid tree has either no nodes and no root, or one root whose descendants form an acyclic
+//! connected structure with consistent parent pointers.
+//!
+//! ```text
+//! root = 7
+//!
+//!           [7 split X]
+//!            /       \
+//!       A-> [3]     [6 leaf]
+//!           / \
+//!      A-> [1] [2] <-B
+//!         leaf leaf
+//!
+//! - every non-root node has exactly one parent
+//! - every split has distinct A/B children
+//! - leaf ids are stable while the leaf survives
+//! - split ids are stable until that split is removed or rebuilt
+//! ```
+
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +32,7 @@ use crate::{
     limits::{LeafMeta, WeightPair, canonicalize_weights},
 };
 
+/// Read-only view of a leaf node inside a [`Tree`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeafNode<T> {
     parent: Option<NodeId>,
@@ -17,22 +41,26 @@ pub struct LeafNode<T> {
 }
 
 impl<T> LeafNode<T> {
+    /// Returns the parent split id, or `None` when this leaf is the root.
     #[must_use]
     pub fn parent(&self) -> Option<NodeId> {
         self.parent
     }
 
+    /// Returns the leaf payload stored in the tree.
     #[must_use]
     pub fn payload(&self) -> &T {
         &self.payload
     }
 
+    /// Returns the sizing metadata used by solving and validation.
     #[must_use]
     pub fn meta(&self) -> &LeafMeta {
         &self.meta
     }
 }
 
+/// Read-only view of an internal split node inside a [`Tree`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitNode {
     parent: Option<NodeId>,
@@ -43,26 +71,31 @@ pub struct SplitNode {
 }
 
 impl SplitNode {
+    /// Returns the parent split id, or `None` when this split is the root.
     #[must_use]
     pub fn parent(&self) -> Option<NodeId> {
         self.parent
     }
 
+    /// Returns the axis along which this split divides its extent.
     #[must_use]
     pub fn axis(&self) -> Axis {
         self.axis
     }
 
+    /// Returns the child id stored in slot `A`.
     #[must_use]
     pub fn a(&self) -> NodeId {
         self.a
     }
 
+    /// Returns the child id stored in slot `B`.
     #[must_use]
     pub fn b(&self) -> NodeId {
         self.b
     }
 
+    /// Returns the relative weight preference between child `A` and child `B`.
     #[must_use]
     pub fn weights(&self) -> WeightPair {
         self.weights
@@ -132,6 +165,10 @@ impl<T> Node<T> {
     }
 }
 
+/// Validated single-root binary split topology.
+///
+/// Node ids are allocated monotonically within a tree. Leaves keep their ids while they survive;
+/// split ids keep their ids until that split is removed or a subtree rebuild replaces it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tree<T> {
     root: Option<NodeId>,
@@ -150,26 +187,33 @@ impl<T> Default for Tree<T> {
 }
 
 impl<T> Tree<T> {
+    /// Creates an empty tree with no root node.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the current root id, or `None` when the tree is empty.
     #[must_use]
     pub fn root_id(&self) -> Option<NodeId> {
         self.root
     }
 
+    /// Returns a read-only split view for `id`.
     #[must_use]
     pub fn split(&self, id: NodeId) -> Option<&SplitNode> {
         self.nodes.get(&id).and_then(Node::as_split)
     }
 
+    /// Returns a read-only leaf view for `id`.
     #[must_use]
     pub fn leaf(&self, id: NodeId) -> Option<&LeafNode<T>> {
         self.nodes.get(&id).and_then(Node::as_leaf)
     }
 
+    /// Returns all node ids sorted by numeric id.
+    ///
+    /// This is allocation order, not traversal order.
     #[must_use]
     pub fn node_ids(&self) -> Vec<NodeId> {
         let mut ids = self.nodes.keys().copied().collect::<Vec<_>>();
@@ -177,6 +221,9 @@ impl<T> Tree<T> {
         ids
     }
 
+    /// Returns all split ids sorted by numeric id.
+    ///
+    /// This is allocation order, not topology order.
     #[must_use]
     pub fn split_ids(&self) -> Vec<NodeId> {
         let mut ids = self
@@ -200,6 +247,17 @@ impl<T> Tree<T> {
         self.nodes.remove(&id)
     }
 
+    /// Validates structural and metadata invariants.
+    ///
+    /// A valid tree satisfies:
+    ///
+    /// - an empty tree has no root
+    /// - a non-empty tree root exists and has no parent
+    /// - every non-root node has exactly one parent
+    /// - every split has two distinct children
+    /// - split weights are not `(0, 0)`
+    /// - leaf limits and priorities are internally consistent
+    /// - the graph is acyclic and has no unreachable stored nodes
     pub fn validate(&self) -> Result<(), ValidationError> {
         match self.root {
             None => {
@@ -290,21 +348,25 @@ impl<T> Tree<T> {
         self.validate_node(child, Some(parent), visited)
     }
 
+    /// Returns `true` if `id` exists in the tree.
     #[must_use]
     pub fn contains(&self, id: NodeId) -> bool {
         self.nodes.contains_key(&id)
     }
 
+    /// Returns `true` if `id` exists and refers to a leaf.
     #[must_use]
     pub fn is_leaf(&self, id: NodeId) -> bool {
         matches!(self.nodes.get(&id), Some(Node::Leaf(_)))
     }
 
+    /// Returns `true` if `id` exists and refers to a split.
     #[must_use]
     pub fn is_split(&self, id: NodeId) -> bool {
         matches!(self.nodes.get(&id), Some(Node::Split(_)))
     }
 
+    /// Returns the parent of `id`, if the node exists and is not the root.
     #[must_use]
     pub fn parent_of(&self, id: NodeId) -> Option<NodeId> {
         self.nodes.get(&id).and_then(Node::parent)
@@ -368,6 +430,7 @@ impl<T> Tree<T> {
         self.set_parent(new, Some(parent));
     }
 
+    /// Returns the child ids of a split as `(a, b)`.
     pub fn children_of(&self, id: NodeId) -> Option<(NodeId, NodeId)> {
         self.nodes
             .get(&id)
@@ -375,6 +438,7 @@ impl<T> Tree<T> {
             .map(|split| (split.a, split.b))
     }
 
+    /// Returns the sibling of `id`, if `id` exists and has a parent split.
     #[must_use]
     pub fn sibling_of(&self, id: NodeId) -> Option<NodeId> {
         let parent = self.parent_of(id)?;
@@ -388,6 +452,9 @@ impl<T> Tree<T> {
         }
     }
 
+    /// Returns the path from `id` to the root, inclusive.
+    ///
+    /// The returned vector starts with `id` and ends with the root.
     #[must_use]
     pub fn path_to_root(&self, mut id: NodeId) -> Vec<NodeId> {
         let mut out = vec![id];
@@ -398,6 +465,9 @@ impl<T> Tree<T> {
         out
     }
 
+    /// Returns the ancestors of `id` from nearest parent to root.
+    ///
+    /// `id` itself is not included.
     #[must_use]
     pub fn ancestors_nearest_first(&self, id: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
@@ -409,6 +479,9 @@ impl<T> Tree<T> {
         out
     }
 
+    /// Returns `true` if `needle` occurs anywhere inside the subtree rooted at `root`.
+    ///
+    /// A node is considered to be inside its own subtree.
     #[must_use]
     pub fn contains_in_subtree(&self, root: NodeId, needle: NodeId) -> bool {
         if root == needle {
@@ -423,6 +496,7 @@ impl<T> Tree<T> {
         }
     }
 
+    /// Returns the first leaf reachable from `id` in depth-first `A`-before-`B` order.
     #[must_use]
     pub fn first_leaf(&self, id: NodeId) -> Option<NodeId> {
         match self.nodes.get(&id)? {
@@ -433,6 +507,32 @@ impl<T> Tree<T> {
         }
     }
 
+    /// Returns leaf ids in depth-first `A`-before-`B` order.
+    ///
+    /// This ordering is the crate's canonical leaf traversal and is reused by preset rebuilds and
+    /// geometry tie-breaking.
+    ///
+    /// ```text
+    ///           [X]
+    ///          /   \
+    ///      A [Y]   [d]
+    ///        / \
+    ///     A[a] [b]B
+    ///
+    /// DFS A-before-B leaf order: [a, b, d]
+    /// ```
+    ///
+    /// ```
+    /// use libtiler::{Axis, LeafMeta, Session, Slot};
+    ///
+    /// let mut session = Session::new();
+    /// let left = session.insert_root("left", LeafMeta::default())?;
+    /// let right = session.split_focus(Axis::X, Slot::B, "right", LeafMeta::default(), None)?;
+    ///
+    /// let root = session.tree().root_id().expect("root should exist");
+    /// assert_eq!(session.tree().leaf_ids_dfs(root), vec![left, right]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[must_use]
     pub fn leaf_ids_dfs(&self, root: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
@@ -440,11 +540,11 @@ impl<T> Tree<T> {
         out
     }
 
-    #[must_use]
     /// Returns split ids in subtree postorder, with descendants before ancestors.
     ///
-    /// The subtree root split, if present, is returned last. This order is
-    /// intended for bottom-up teardown and rewrite paths.
+    /// The subtree root split, if present, is returned last. This order is intended for bottom-up
+    /// teardown and rewrite paths.
+    #[must_use]
     pub fn split_ids_postorder(&self, root: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         self.collect_split_ids(root, &mut out);

@@ -1,3 +1,10 @@
+//! Geometry-driven resize helpers.
+//!
+//! Resize eligibility is based on the exact solved edge touched by the focused leaf, not merely on
+//! ancestor axis. Resizing rewrites split weights rather than storing absolute pixel or cell
+//! extents, and strategies differ only in how they distribute a requested movement across eligible
+//! ancestor splits.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -11,23 +18,39 @@ use crate::{
     tree::Tree,
 };
 
+/// Strategy for distributing a resize request across eligible ancestor splits.
+///
+/// For example, a rightward grow request can either consume only the nearest matching divider
+/// ([`Self::Local`]), walk outward through all matching ancestors ([`Self::AncestorChain`]), or
+/// spread the movement across all matching ancestors by available slack
+/// ([`Self::DistributedBySlack`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResizeStrategy {
+    /// Apply the entire request to the nearest eligible split only.
     Local,
+    /// Consume slack greedily from nearest eligible split to farthest.
     AncestorChain,
+    /// Distribute by strict slack proportion, with deterministic remainder assignment.
     DistributedBySlack,
 }
 
+/// Ancestor split that can participate in a geometry-driven resize.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EligibleSplit {
+    /// Split node id.
     pub split: NodeId,
+    /// Current total extent of the split on its axis.
     pub total: u32,
+    /// Current solved extent of child `A`.
     pub current_a: u32,
+    /// Lowest strictly feasible extent for child `A` under the current cross-size.
     pub lo: u32,
+    /// Highest strictly feasible extent for child `A` under the current cross-size.
     pub hi: u32,
 }
 
 impl EligibleSplit {
+    /// Returns remaining strict slack in the direction indicated by `sign`.
     pub(crate) fn slack(self, sign: i8) -> u32 {
         if self.lo > self.hi {
             return 0;
@@ -40,6 +63,9 @@ impl EligibleSplit {
     }
 }
 
+/// Returns the sign to apply to child `A` extents for a resize request.
+///
+/// Positive means "increase child `A`"; negative means "decrease child `A`".
 pub(crate) fn resize_sign(dir: Direction, outward: bool) -> i8 {
     match (dir, outward) {
         (Direction::Right | Direction::Down, true) | (Direction::Left | Direction::Up, false) => 1,
@@ -47,6 +73,15 @@ pub(crate) fn resize_sign(dir: Direction, outward: bool) -> i8 {
     }
 }
 
+/// Distributes a requested resize amount across `eligible` splits.
+///
+/// The returned vector is in nearest-first eligible order.
+///
+/// - [`ResizeStrategy::Local`] may return a zero-delta entry if the nearest split has zero slack.
+/// - [`ResizeStrategy::AncestorChain`] consumes slack greedily from nearest to farthest.
+/// - [`ResizeStrategy::DistributedBySlack`] floors proportional shares, assigns leftover units by
+///   largest remainder with earlier eligible splits winning ties, then restores original eligible
+///   order in the output.
 pub(crate) fn distribute_resize(
     amount: u32,
     strategy: ResizeStrategy,
@@ -116,6 +151,11 @@ pub(crate) fn distribute_resize(
     }
 }
 
+/// Returns resize-eligible ancestor splits for `focus`, nearest first.
+///
+/// Eligibility requires exact solved divider alignment on the requested edge of the focused leaf.
+/// The returned `lo` and `hi` bounds are the strictly feasible bounds for child `A` under the
+/// current cross-size at that split.
 pub(crate) fn eligible_splits<T>(
     tree: &Tree<T>,
     focus: NodeId,

@@ -1,3 +1,50 @@
+//! Deterministic subtree rebuild presets.
+//!
+//! Presets rebuild a selected subtree from its leaves in stable depth-first `A`-before-`B` order.
+//! Leaf ids, payloads, and metadata are preserved across the rebuild, while split ids may change.
+//! Presets operate purely on topology and leaf order; they do not inspect solved geometry.
+//!
+//! ```text
+//! leaf order consumed by preset rebuild: [a, b, c, d]
+//!
+//! Balanced(start_axis = X, alternate = true)
+//!         [X]
+//!        /   \
+//!      [Y]   [Y]
+//!     /   \ /   \
+//!   [a] [b][c] [d]
+//!
+//! Dwindle(start_axis = X, new_leaf_slot = B)
+//!           [X]
+//!          /   \
+//!        [a]   [Y]
+//!             /   \
+//!           [b]   [X]
+//!                /   \
+//!              [c]   [d]
+//!
+//! Tall(master_slot = A)
+//!           [X]
+//!          /   \
+//!        [a]   [Y]
+//!             /   \
+//!           [b]   [Y]
+//!                /   \
+//!              [c]   [d]
+//!
+//! Wide(master_slot = A)
+//!           [Y]
+//!          /   \
+//!        [a]   [X]
+//!             /   \
+//!           [b]   [X]
+//!                /   \
+//!              [c]   [d]
+//! ```
+//!
+//! For [`TallPreset`] and [`WidePreset`], only the root split uses caller-provided
+//! `root_weights`; the stack side is rebuilt as equal-share linear splits.
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,38 +55,81 @@ use crate::{
     tree::Tree,
 };
 
+/// Balanced midpoint-splitting preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalancedPreset {
+    /// Axis used at the root of the rebuilt subtree.
     pub start_axis: Axis,
+    /// Whether each recursive level toggles axis instead of repeating `start_axis`.
     pub alternate: bool,
 }
 
+/// Alternating chain preset that inserts one new leaf per recursive step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DwindlePreset {
+    /// Axis used at the root of the rebuilt subtree.
     pub start_axis: Axis,
+    /// Side that receives the next leaf at each recursive step.
     pub new_leaf_slot: Slot,
 }
 
+/// Master-and-stack preset with a horizontal root split.
+///
+/// The non-master side is rebuilt as an equal-share vertical stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TallPreset {
+    /// Side of the master leaf in the root split.
     pub master_slot: Slot,
+    /// Weight pair applied only to the root split between master and stack.
     pub root_weights: WeightPair,
 }
 
+/// Master-and-stack preset with a vertical root split.
+///
+/// The non-master side is rebuilt as an equal-share horizontal stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidePreset {
+    /// Side of the master leaf in the root split.
     pub master_slot: Slot,
+    /// Weight pair applied only to the root split between master and stack.
     pub root_weights: WeightPair,
 }
 
+/// Public preset selector for subtree rebuild operations.
+///
+/// ```
+/// use libtiler::{Axis, BalancedPreset, LeafMeta, PresetKind, Session, Slot};
+///
+/// let mut session = Session::new();
+/// let focus = session.insert_root("a", LeafMeta::default())?;
+/// let _b = session.split_focus(Axis::X, Slot::B, "b", LeafMeta::default(), None)?;
+/// let root = session.tree().root_id().expect("root should exist");
+///
+/// session.set_selection(root)?;
+/// session.apply_preset(PresetKind::Balanced(BalancedPreset {
+///     start_axis: Axis::Y,
+///     alternate: true,
+/// }))?;
+///
+/// assert_eq!(session.focus(), Some(focus));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PresetKind {
+    /// Midpoint-balanced recursive shape using a left-biased midpoint split.
     Balanced(BalancedPreset),
+    /// Alternating chain shape that repeatedly inserts the next leaf on a chosen side.
     Dwindle(DwindlePreset),
+    /// One master leaf plus an orthogonal stack of remaining leaves.
     Tall(TallPreset),
+    /// Rotated tall layout with one master leaf plus an orthogonal stack.
     Wide(WidePreset),
 }
 
+/// Validates public preset parameters before a rebuild.
+///
+/// Only [`PresetKind::Tall`] and [`PresetKind::Wide`] can fail validation, and only when their
+/// `root_weights` are invalid.
 pub(crate) fn validate_preset(preset: PresetKind) -> Result<(), OpError> {
     match preset {
         PresetKind::Balanced(_) | PresetKind::Dwindle(_) => Ok(()),
@@ -71,6 +161,10 @@ pub(crate) fn build_preset_subtree<T>(
     }
 }
 
+/// Returns whether `root` already matches `preset`.
+///
+/// Matching is checked against the subtree's current leaf order in stable depth-first
+/// `A`-before-`B` order.
 pub(crate) fn subtree_matches_preset<T>(
     tree: &Tree<T>,
     root: NodeId,
@@ -92,6 +186,10 @@ pub(crate) fn subtree_matches_preset<T>(
     }
 }
 
+/// Rebuilds `selection` to match `preset`.
+///
+/// Returns `Ok(None)` when `selection` is a leaf or the subtree already matches `preset`.
+/// Otherwise the rebuild preserves existing leaves and reconnects a new split structure.
 pub(crate) fn apply_preset_subtree<T>(
     tree: &mut Tree<T>,
     selection: NodeId,
