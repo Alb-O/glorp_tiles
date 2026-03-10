@@ -120,9 +120,8 @@ pub use session::{RebalanceMode, Session};
 pub use snapshot::{ScoreTuple, Snapshot, SplitTrace, Violation, ViolationKind};
 /// Deterministic solver policy, helpers, and solving entry points.
 pub use solver::{
-    OverflowMode, PairSpec, ShortageMode, SolverPolicy, TieBreakMode, choose_extent,
-    choose_extent_with_score, score, solve, solve_strict, solve_strict_with_revision,
-    solve_with_revision, summarize,
+	OverflowMode, PairSpec, ShortageMode, SolverPolicy, TieBreakMode, choose_extent, choose_extent_with_score, score,
+	solve, solve_strict, solve_strict_with_revision, solve_with_revision, summarize,
 };
 /// Leaf node view returned by [`Tree::leaf`].
 pub type LeafNode<T> = tree::LeafNode<T>;
