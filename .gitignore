@@ -18,7 +18,7 @@ result-*
 # wants to commit this.
 devenv.lock
 
-# Local override conventions used across dvnv repos.
+# Local override conventions used across poly repos.
 *.local.*
 *.override.*
 !*.local.example.*
@@ -28,12 +28,12 @@ devenv.lock
 # devenv-materialized config symlinks
 # -----------------------------------------------------------------------------
 # These are materialized into consumer repos for editor / tool discovery.
-# The real source of truth lives in dvnv modules, not in the consumer repo.
+# The real source of truth lives in poly modules, not in the consumer repo.
 .cargo/
 rust-toolchain.toml
 rustfmt.toml
 
-# Managed Cargo: generated from Cargo.dvnv.toml + shared catalog.
+# Managed Cargo: generated from Cargo.poly.toml + shared catalog.
 # Keep this ignored only in repos that opt into managed Cargo generation.
 /Cargo.toml
 
