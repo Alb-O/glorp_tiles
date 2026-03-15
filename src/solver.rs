@@ -226,7 +226,7 @@ pub fn solve_with_revision<T>(
 /// produces any violation returns [`SolveError::Infeasible`].
 ///
 /// ```
-/// use libtiler::{
+/// use glorp_tiles::{
 ///     solve, solve_strict, Axis, LeafMeta, Rect, Session, SizeLimits, Slot, SolveError,
 ///     SolverPolicy,
 /// };

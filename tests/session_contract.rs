@@ -2,7 +2,7 @@ mod common;
 
 use {
 	common::root_rect,
-	libtiler::{
+	glorp_tiles::{
 		Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, Slot,
 		SolverPolicy, TallPreset, ValidationError, WeightPair,
 	},

@@ -131,7 +131,7 @@ impl Summary {
 /// as `(0, 1)` or `(1, 0)` instead of collapsing to all-zero.
 ///
 /// ```
-/// use libtiler::{WeightPair, canonicalize_weights};
+/// use glorp_tiles::{WeightPair, canonicalize_weights};
 ///
 /// assert_eq!(canonicalize_weights(4, 2), WeightPair { a: 2, b: 1 });
 /// assert_eq!(canonicalize_weights(0, 9), WeightPair { a: 0, b: 1 });

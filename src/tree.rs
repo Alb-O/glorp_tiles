@@ -500,7 +500,7 @@ impl<T> Tree<T> {
 	/// ```
 	///
 	/// ```
-	/// use libtiler::{Axis, LeafMeta, Session, Slot};
+	/// use glorp_tiles::{Axis, LeafMeta, Session, Slot};
 	///
 	/// let mut session = Session::new();
 	/// let left = session.insert_root("left", LeafMeta::default())?;

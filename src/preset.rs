@@ -99,7 +99,7 @@ pub struct WidePreset {
 /// Public preset selector for subtree rebuild operations.
 ///
 /// ```
-/// use libtiler::{Axis, BalancedPreset, LeafMeta, PresetKind, Session, Slot};
+/// use glorp_tiles::{Axis, BalancedPreset, LeafMeta, PresetKind, Session, Slot};
 ///
 /// let mut session = Session::new();
 /// let focus = session.insert_root("a", LeafMeta::default())?;

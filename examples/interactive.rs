@@ -1,7 +1,7 @@
 // Line-oriented interactive demo over `Session<String>`.
 
 use {
-	libtiler::{
+	glorp_tiles::{
 		Axis, BalancedPreset, Direction, DwindlePreset, LeafMeta, OpError, PresetKind, RebalanceMode, Rect,
 		ResizeStrategy, Session, Slot, Snapshot, SolverPolicy, TallPreset, WeightPair, WidePreset,
 	},
@@ -131,7 +131,7 @@ fn repl_loop(demo: &mut Demo) -> Result<(), Box<dyn Error>> {
 	let mut line = String::new();
 
 	loop {
-		print!("libtiler> ");
+		print!("glorp_tiles> ");
 		io::stdout().flush()?;
 
 		line.clear();
@@ -159,7 +159,7 @@ fn repl_loop(demo: &mut Demo) -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
-fn print_tree(session: &Session<String>, id: libtiler::NodeId, prefix: &str, branch: Option<char>, last: bool) {
+fn print_tree(session: &Session<String>, id: glorp_tiles::NodeId, prefix: &str, branch: Option<char>, last: bool) {
 	let marker = match branch {
 		Some(slot) if last => format!("\\-{slot} "),
 		Some(slot) => format!("|-{slot} "),
@@ -190,7 +190,7 @@ fn print_tree(session: &Session<String>, id: libtiler::NodeId, prefix: &str, bra
 	}
 }
 
-fn annotations(session: &Session<String>, id: libtiler::NodeId) -> String {
+fn annotations(session: &Session<String>, id: glorp_tiles::NodeId) -> String {
 	let mut tags = Vec::new();
 	if session.focus() == Some(id) {
 		tags.push("focus");
@@ -205,7 +205,7 @@ fn annotations(session: &Session<String>, id: libtiler::NodeId) -> String {
 	}
 }
 
-fn fmt_id(id: Option<libtiler::NodeId>) -> String {
+fn fmt_id(id: Option<glorp_tiles::NodeId>) -> String {
 	id.map_or_else(|| String::from("-"), |value| value.to_string())
 }
 

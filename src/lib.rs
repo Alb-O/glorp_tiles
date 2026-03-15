@@ -1,6 +1,6 @@
 //! Deterministic binary split tiling for editor, window, and TUI layouts.
 //!
-//! `libtiler` models a layout as a single-root binary split tree with exact half-open integer
+//! `glorp_tiles` models a layout as a single-root binary split tree with exact half-open integer
 //! rectangles. The crate is split into two layers: [`Tree`] exposes validated topology and leaf
 //! metadata, while [`Session`] adds focus, selection, revision tracking, and geometry-driven
 //! editing commands.
@@ -65,7 +65,7 @@
 //! - navigation and resize operations consume a specific snapshot revision
 //!
 //! ```
-//! use libtiler::{
+//! use glorp_tiles::{
 //!     Axis, Direction, LeafMeta, Rect, ResizeStrategy, Session, Slot, SolverPolicy,
 //! };
 //!

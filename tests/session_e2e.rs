@@ -2,7 +2,7 @@ mod common;
 
 use {
 	common::{assert_partition, exercise_trace, leaf_ids, meta, root_rect, split_ids},
-	libtiler::{
+	glorp_tiles::{
 		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PresetKind, RebalanceMode, ResizeStrategy, Session, Slot,
 		SolverPolicy, TallPreset, WeightPair, WidePreset,
 	},
@@ -25,7 +25,7 @@ enum NodeSnapshot {
 	},
 }
 
-fn snapshot_node(tree: &libtiler::Tree<u16>, id: NodeId) -> NodeSnapshot {
+fn snapshot_node(tree: &glorp_tiles::Tree<u16>, id: NodeId) -> NodeSnapshot {
 	if let Some(leaf) = tree.leaf(id) {
 		NodeSnapshot::Leaf {
 			parent: leaf.parent(),

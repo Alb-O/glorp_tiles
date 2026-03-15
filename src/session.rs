@@ -52,7 +52,7 @@ pub enum RebalanceMode {
 /// - selection is either that focused leaf or a split that contains it
 ///
 /// ```
-/// use libtiler::{Axis, LeafMeta, Rect, Session, Slot, SolverPolicy};
+/// use glorp_tiles::{Axis, LeafMeta, Rect, Session, Slot, SolverPolicy};
 ///
 /// let mut session = Session::new();
 /// session.insert_root("main", LeafMeta::default())?;

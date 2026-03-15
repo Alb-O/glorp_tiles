@@ -2,7 +2,7 @@ mod common;
 
 use {
 	common::{assert_partition, choose_extent_oracle, exercise_trace, root_rect, solve_reference, stressed_policy},
-	libtiler::{
+	glorp_tiles::{
 		Axis, LeafMeta, PairSpec, Session, Slot, SolveError, SolverPolicy, ValidationError, WeightPair,
 		choose_extent_with_score, solve, summarize,
 	},
@@ -10,7 +10,7 @@ use {
 	std::collections::HashMap,
 };
 
-fn two_leaf_tree(left: LeafMeta, right: LeafMeta) -> libtiler::Tree<u8> {
+fn two_leaf_tree(left: LeafMeta, right: LeafMeta) -> glorp_tiles::Tree<u8> {
 	let mut session = Session::new();
 	let _ = session.insert_root(1, left).expect("insert root");
 	let _ = session
@@ -164,7 +164,7 @@ fn scale_symmetry_holds_with_exact_integer_arithmetic() {
 		.split_focus(Axis::Y, Slot::B, 3_u16, LeafMeta::default(), None)
 		.expect("split y");
 	let scaled_meta = LeafMeta {
-		limits: libtiler::SizeLimits {
+		limits: glorp_tiles::SizeLimits {
 			min_w: 3,
 			min_h: 3,
 			..LeafMeta::default().limits
@@ -222,7 +222,7 @@ fn solver_handles_maximal_weights_without_panicking() {
 #[test]
 fn summarize_rejects_min_width_sum_overflow() {
 	let huge = LeafMeta {
-		limits: libtiler::SizeLimits {
+		limits: glorp_tiles::SizeLimits {
 			min_w: u32::MAX,
 			..LeafMeta::default().limits
 		},
@@ -249,7 +249,7 @@ fn summarize_rejects_min_width_sum_overflow() {
 #[test]
 fn summarize_rejects_finite_max_width_sum_overflow() {
 	let bounded = LeafMeta {
-		limits: libtiler::SizeLimits {
+		limits: glorp_tiles::SizeLimits {
 			max_w: Some(u32::MAX),
 			..LeafMeta::default().limits
 		},
@@ -270,7 +270,7 @@ fn summarize_rejects_finite_max_width_sum_overflow() {
 #[test]
 fn session_try_solve_reports_unrepresentable_summary_overflow() {
 	let huge = LeafMeta {
-		limits: libtiler::SizeLimits {
+		limits: glorp_tiles::SizeLimits {
 			min_w: u32::MAX,
 			..LeafMeta::default().limits
 		},

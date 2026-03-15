@@ -2,7 +2,7 @@ mod common;
 
 use {
 	common::{best_neighbor_oracle, eligible_splits_oracle, exercise_trace, leaf_ids, root_rect},
-	libtiler::{
+	glorp_tiles::{
 		Axis, Direction, LeafMeta, NavError, NodeId, ResizeStrategy, Session, Slot, SolverPolicy, WeightPair,
 		canonicalize_weights,
 	},
@@ -11,7 +11,7 @@ use {
 
 fn zero_meta() -> LeafMeta {
 	LeafMeta {
-		limits: libtiler::SizeLimits {
+		limits: glorp_tiles::SizeLimits {
 			min_w: 0,
 			min_h: 0,
 			max_w: None,
@@ -25,7 +25,7 @@ fn split_weights(session: &Session<u8>, split_id: NodeId) -> WeightPair {
 	session.tree().split(split_id).expect("split should exist").weights()
 }
 
-fn left_edge(rect: libtiler::Rect) -> i32 {
+fn left_edge(rect: glorp_tiles::Rect) -> i32 {
 	rect.left()
 }
 

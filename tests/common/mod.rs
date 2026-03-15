@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use {
-	libtiler::{
+	glorp_tiles::{
 		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PairSpec, PresetKind, RebalanceMode, Rect, ResizeStrategy,
 		ScoreTuple, Session, ShortageMode, SizeLimits, Slot, SolverPolicy, TallPreset, TieBreakMode, Tree, WidePreset,
 	},
@@ -40,7 +40,7 @@ pub fn meta(min_w: u32, min_h: u32, max_w: Option<u32>, max_h: Option<u32>, shri
 			max_w,
 			max_h,
 		},
-		priority: libtiler::Priority { shrink, grow: 1 },
+		priority: glorp_tiles::Priority { shrink, grow: 1 },
 	}
 }
 
@@ -85,7 +85,7 @@ pub fn split_ids<T>(session: &Session<T>) -> Vec<NodeId> {
 	session.tree().split_ids()
 }
 
-pub fn assert_partition<T>(session: &Session<T>, root: Rect, snap: &libtiler::Snapshot) {
+pub fn assert_partition<T>(session: &Session<T>, root: Rect, snap: &glorp_tiles::Snapshot) {
 	let Some(tree_root) = session.tree().root_id() else {
 		assert!(snap.node_rects.is_empty());
 		return;
@@ -107,7 +107,7 @@ pub fn assert_partition<T>(session: &Session<T>, root: Rect, snap: &libtiler::Sn
 }
 
 pub fn best_neighbor_oracle<T>(
-	session: &Session<T>, snap: &libtiler::Snapshot, current: NodeId, dir: Direction,
+	session: &Session<T>, snap: &glorp_tiles::Snapshot, current: NodeId, dir: Direction,
 ) -> Option<NodeId> {
 	let current_rect = snap.rect(current)?;
 	let order = session
@@ -153,7 +153,7 @@ impl RefEligibleSplit {
 }
 
 pub fn eligible_splits_oracle<T>(
-	session: &Session<T>, snap: &libtiler::Snapshot, focus: NodeId, dir: Direction,
+	session: &Session<T>, snap: &glorp_tiles::Snapshot, focus: NodeId, dir: Direction,
 ) -> Vec<RefEligibleSplit> {
 	let focus_rect = snap.rect(focus).expect("focus rect should exist");
 	let mut summaries = HashMap::new();
@@ -198,9 +198,9 @@ pub fn eligible_splits_oracle<T>(
 		.collect()
 }
 
-pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: &SolverPolicy) -> libtiler::Snapshot {
+pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: &SolverPolicy) -> glorp_tiles::Snapshot {
 	let mut summaries = HashMap::new();
-	let mut snapshot = libtiler::Snapshot {
+	let mut snapshot = glorp_tiles::Snapshot {
 		revision,
 		root,
 		node_rects: HashMap::new(),
@@ -219,7 +219,7 @@ pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: &So
 
 fn solve_reference_node<T>(
 	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, RefSummary>, policy: &SolverPolicy,
-	out: &mut libtiler::Snapshot,
+	out: &mut glorp_tiles::Snapshot,
 ) {
 	out.node_rects.insert(id, rect);
 	if let Some(leaf) = tree.leaf(id) {
@@ -247,7 +247,7 @@ fn solve_reference_node<T>(
 		};
 		let (chosen_a, score) = choose_extent_oracle(spec, policy);
 		let (rect_a, rect_b) = rect.split(split.axis(), chosen_a);
-		out.split_traces.push(libtiler::SplitTrace {
+		out.split_traces.push(glorp_tiles::SplitTrace {
 			split: id,
 			axis: split.axis(),
 			total: spec.total,
@@ -324,35 +324,35 @@ fn min_option_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 	}
 }
 
-fn record_leaf_violations(node: NodeId, rect: Rect, limits: &SizeLimits, out: &mut libtiler::Snapshot) {
+fn record_leaf_violations(node: NodeId, rect: Rect, limits: &SizeLimits, out: &mut glorp_tiles::Snapshot) {
 	if rect.w < limits.min_w {
-		out.violations.push(libtiler::Violation {
+		out.violations.push(glorp_tiles::Violation {
 			node,
-			kind: libtiler::ViolationKind::MinWidth,
+			kind: glorp_tiles::ViolationKind::MinWidth,
 			required: limits.min_w,
 			actual: rect.w,
 		});
 	}
 	if rect.h < limits.min_h {
-		out.violations.push(libtiler::Violation {
+		out.violations.push(glorp_tiles::Violation {
 			node,
-			kind: libtiler::ViolationKind::MinHeight,
+			kind: glorp_tiles::ViolationKind::MinHeight,
 			required: limits.min_h,
 			actual: rect.h,
 		});
 	}
 	if let Some(max_w) = limits.max_w.filter(|max_w| rect.w > *max_w) {
-		out.violations.push(libtiler::Violation {
+		out.violations.push(glorp_tiles::Violation {
 			node,
-			kind: libtiler::ViolationKind::MaxWidth,
+			kind: glorp_tiles::ViolationKind::MaxWidth,
 			required: max_w,
 			actual: rect.w,
 		});
 	}
 	if let Some(max_h) = limits.max_h.filter(|max_h| rect.h > *max_h) {
-		out.violations.push(libtiler::Violation {
+		out.violations.push(glorp_tiles::Violation {
 			node,
-			kind: libtiler::ViolationKind::MaxHeight,
+			kind: glorp_tiles::ViolationKind::MaxHeight,
 			required: max_h,
 			actual: rect.h,
 		});
@@ -424,13 +424,13 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 						}),
 						1 => PresetKind::Tall(TallPreset {
 							master_slot: slot(byte),
-							root_weights: libtiler::WeightPair { a: 2, b: 1 },
+							root_weights: glorp_tiles::WeightPair { a: 2, b: 1 },
 						}),
 						2 => PresetKind::Wide(WidePreset {
 							master_slot: slot(byte),
-							root_weights: libtiler::WeightPair { a: 1, b: 3 },
+							root_weights: glorp_tiles::WeightPair { a: 1, b: 3 },
 						}),
-						_ => PresetKind::Dwindle(libtiler::DwindlePreset {
+						_ => PresetKind::Dwindle(glorp_tiles::DwindlePreset {
 							start_axis: axis(byte),
 							new_leaf_slot: slot(byte),
 						}),
@@ -575,7 +575,7 @@ pub fn stressed_policy(seed: u8) -> SolverPolicy {
 		} else {
 			ShortageMode::ByShrinkPriority
 		},
-		overflow_mode: libtiler::OverflowMode::Uniform,
+		overflow_mode: glorp_tiles::OverflowMode::Uniform,
 		tie_break: if seed & 2 == 0 {
 			TieBreakMode::PreferA
 		} else {

@@ -1,6 +1,6 @@
-# libtiler
+# glorp_tiles
 
-`libtiler` is a deterministic binary split tiling library for editor and TUI layouts.
+`glorp_tiles` is a deterministic binary split tiling library for editor and TUI layouts.
 
 It implements the design in [`docs/001.design_spec_v1.md`](docs/001.design_spec_v1.md):
 
@@ -18,12 +18,12 @@ The library is intentionally split into two layers.
 - Core: topology, metadata, validation, summaries, and solving
 - Session: focus, selection, geometry-driven commands, and revision tracking
 
-Public modules are re-exported from `libtiler` for ergonomic use.
+Public modules are re-exported from `glorp_tiles` for ergonomic use.
 
 ## Example
 
 ```rust
-use libtiler::{
+use glorp_tiles::{
     Axis, Direction, LeafMeta, Rect, ResizeStrategy, Session, Slot, SolverPolicy,
 };
 
