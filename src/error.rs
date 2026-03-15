@@ -1,8 +1,9 @@
 //! Public error taxonomy for validation, solving, navigation, and mutation.
 
-use std::fmt::{Display, Formatter};
-
-use crate::ids::NodeId;
+use {
+	crate::ids::NodeId,
+	std::fmt::{Display, Formatter},
+};
 
 /// Structural or metadata validation failure for a tree or session.
 #[derive(Debug, Clone, PartialEq, Eq)]

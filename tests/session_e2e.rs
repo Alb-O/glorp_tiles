@@ -1,11 +1,12 @@
 mod common;
 
-use std::collections::BTreeSet;
-
-use common::{assert_partition, exercise_trace, leaf_ids, meta, root_rect, split_ids};
-use libtiler::{
-	Axis, BalancedPreset, Direction, LeafMeta, NodeId, PresetKind, RebalanceMode, ResizeStrategy, Session, Slot,
-	SolverPolicy, TallPreset, WeightPair, WidePreset,
+use {
+	common::{assert_partition, exercise_trace, leaf_ids, meta, root_rect, split_ids},
+	libtiler::{
+		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PresetKind, RebalanceMode, ResizeStrategy, Session, Slot,
+		SolverPolicy, TallPreset, WeightPair, WidePreset,
+	},
+	std::collections::BTreeSet,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

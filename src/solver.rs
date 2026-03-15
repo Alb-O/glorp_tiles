@@ -5,17 +5,17 @@
 //! scored allocation problem. Non-strict entry points always return a full [`Snapshot`] for valid
 //! trees, while strict entry points reject any solve that records hard-limit violations.
 
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	error::{SolveError, ValidationError},
-	geom::{Axis, Rect},
-	ids::NodeId,
-	limits::{Summary, WeightPair},
-	snapshot::{ScoreTuple, Snapshot, SplitTrace, Violation, ViolationKind},
-	tree::Tree,
+use {
+	crate::{
+		error::{SolveError, ValidationError},
+		geom::{Axis, Rect},
+		ids::NodeId,
+		limits::{Summary, WeightPair},
+		snapshot::{ScoreTuple, Snapshot, SplitTrace, Violation, ViolationKind},
+		tree::Tree,
+	},
+	serde::{Deserialize, Serialize},
+	std::collections::HashMap,
 };
 
 /// Strategy for pricing shortage below child minimum extents.

@@ -1,13 +1,14 @@
 mod common;
 
-use std::collections::HashMap;
-
-use common::{assert_partition, choose_extent_oracle, exercise_trace, root_rect, solve_reference, stressed_policy};
-use libtiler::{
-	Axis, LeafMeta, PairSpec, Session, Slot, SolveError, SolverPolicy, ValidationError, WeightPair,
-	choose_extent_with_score, solve, summarize,
+use {
+	common::{assert_partition, choose_extent_oracle, exercise_trace, root_rect, solve_reference, stressed_policy},
+	libtiler::{
+		Axis, LeafMeta, PairSpec, Session, Slot, SolveError, SolverPolicy, ValidationError, WeightPair,
+		choose_extent_with_score, solve, summarize,
+	},
+	proptest::prelude::*,
+	std::collections::HashMap,
 };
-use proptest::prelude::*;
 
 fn two_leaf_tree(left: LeafMeta, right: LeafMeta) -> libtiler::Tree<u8> {
 	let mut session = Session::new();

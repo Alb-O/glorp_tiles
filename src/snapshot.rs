@@ -4,14 +4,14 @@
 //! rectangles for every node, deterministic split-allocation traces, and any hard-limit
 //! violations observed in the solved leaf rectangles.
 
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	geom::{Axis, Rect},
-	ids::{NodeId, Revision},
-	limits::WeightPair,
+use {
+	crate::{
+		geom::{Axis, Rect},
+		ids::{NodeId, Revision},
+		limits::WeightPair,
+	},
+	serde::{Deserialize, Serialize},
+	std::collections::HashMap,
 };
 
 /// Lexicographic score used when comparing candidate split allocations.

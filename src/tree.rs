@@ -21,15 +21,15 @@
 //! - split ids are stable until that split is removed or rebuilt
 //! ```
 
-use std::collections::{HashMap, HashSet};
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	error::{OpError, ValidationError},
-	geom::{Axis, Slot},
-	ids::NodeId,
-	limits::{LeafMeta, WeightPair, canonicalize_weights},
+use {
+	crate::{
+		error::{OpError, ValidationError},
+		geom::{Axis, Slot},
+		ids::NodeId,
+		limits::{LeafMeta, WeightPair, canonicalize_weights},
+	},
+	serde::{Deserialize, Serialize},
+	std::collections::{HashMap, HashSet},
 };
 
 /// Read-only view of a leaf node inside a [`Tree`].

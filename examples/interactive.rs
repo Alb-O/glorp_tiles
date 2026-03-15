@@ -1,11 +1,14 @@
 // Line-oriented interactive demo over `Session<String>`.
 
-use std::error::Error;
-use std::io::{self, Write};
-
-use libtiler::{
-	Axis, BalancedPreset, Direction, DwindlePreset, LeafMeta, OpError, PresetKind, RebalanceMode, Rect, ResizeStrategy,
-	Session, Slot, Snapshot, SolverPolicy, TallPreset, WeightPair, WidePreset,
+use {
+	libtiler::{
+		Axis, BalancedPreset, Direction, DwindlePreset, LeafMeta, OpError, PresetKind, RebalanceMode, Rect,
+		ResizeStrategy, Session, Slot, Snapshot, SolverPolicy, TallPreset, WeightPair, WidePreset,
+	},
+	std::{
+		error::Error,
+		io::{self, Write},
+	},
 };
 
 fn main() -> Result<(), Box<dyn Error>> {

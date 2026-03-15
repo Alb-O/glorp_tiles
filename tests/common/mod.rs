@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
-
-use libtiler::{
-	Axis, BalancedPreset, Direction, LeafMeta, NodeId, PairSpec, PresetKind, RebalanceMode, Rect, ResizeStrategy,
-	ScoreTuple, Session, ShortageMode, SizeLimits, Slot, SolverPolicy, TallPreset, TieBreakMode, Tree, WidePreset,
+use {
+	libtiler::{
+		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PairSpec, PresetKind, RebalanceMode, Rect, ResizeStrategy,
+		ScoreTuple, Session, ShortageMode, SizeLimits, Slot, SolverPolicy, TallPreset, TieBreakMode, Tree, WidePreset,
+	},
+	std::collections::HashMap,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

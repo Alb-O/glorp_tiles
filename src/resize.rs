@@ -5,17 +5,17 @@
 //! extents, and strategies differ only in how they distribute a requested movement across eligible
 //! ancestor splits.
 
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	error::OpError,
-	geom::{Axis, Direction},
-	ids::NodeId,
-	limits::Summary,
-	snapshot::Snapshot,
-	tree::Tree,
+use {
+	crate::{
+		error::OpError,
+		geom::{Axis, Direction},
+		ids::NodeId,
+		limits::Summary,
+		snapshot::Snapshot,
+		tree::Tree,
+	},
+	serde::{Deserialize, Serialize},
+	std::collections::HashMap,
 };
 
 /// Strategy for distributing a resize request across eligible ancestor splits.

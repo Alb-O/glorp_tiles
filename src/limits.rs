@@ -9,9 +9,10 @@
 //! The solver combines leaf metadata into a [`Summary`] that describes the feasible envelope of a
 //! subtree.
 
-use serde::{Deserialize, Serialize};
-
-use crate::geom::Axis;
+use {
+	crate::geom::Axis,
+	serde::{Deserialize, Serialize},
+};
 
 /// Relative preference between the `A` and `B` children of a split.
 ///

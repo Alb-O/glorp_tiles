@@ -4,12 +4,13 @@
 //! the directional half-plane, then are ranked lexicographically by gap and alignment metrics.
 //! Depth-first leaf order provides the final stable tie-break source.
 
-use std::collections::HashMap;
-
-use crate::{
-	geom::{Direction, Rect, orth_gap},
-	ids::NodeId,
-	tree::Tree,
+use {
+	crate::{
+		geom::{Direction, Rect, orth_gap},
+		ids::NodeId,
+		tree::Tree,
+	},
+	std::collections::HashMap,
 };
 
 /// Lexicographic navigation score for one candidate leaf.

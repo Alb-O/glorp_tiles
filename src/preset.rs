@@ -45,14 +45,15 @@
 //! For [`TallPreset`] and [`WidePreset`], only the root split uses caller-provided
 //! `root_weights`; the stack side is rebuilt as equal-share linear splits.
 
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	error::OpError,
-	geom::{Axis, Slot},
-	ids::NodeId,
-	limits::{WeightPair, canonicalize_weights},
-	tree::Tree,
+use {
+	crate::{
+		error::OpError,
+		geom::{Axis, Slot},
+		ids::NodeId,
+		limits::{WeightPair, canonicalize_weights},
+		tree::Tree,
+	},
+	serde::{Deserialize, Serialize},
 };
 
 /// Balanced midpoint-splitting preset.

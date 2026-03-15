@@ -1,11 +1,13 @@
 mod common;
 
-use common::{best_neighbor_oracle, eligible_splits_oracle, exercise_trace, leaf_ids, root_rect};
-use libtiler::{
-	Axis, Direction, LeafMeta, NavError, NodeId, ResizeStrategy, Session, Slot, SolverPolicy, WeightPair,
-	canonicalize_weights,
+use {
+	common::{best_neighbor_oracle, eligible_splits_oracle, exercise_trace, leaf_ids, root_rect},
+	libtiler::{
+		Axis, Direction, LeafMeta, NavError, NodeId, ResizeStrategy, Session, Slot, SolverPolicy, WeightPair,
+		canonicalize_weights,
+	},
+	proptest::prelude::*,
 };
-use proptest::prelude::*;
 
 fn zero_meta() -> LeafMeta {
 	LeafMeta {

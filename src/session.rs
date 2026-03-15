@@ -17,21 +17,21 @@
 //! invalid selection = a | any node not containing b
 //! ```
 
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-	error::{NavError, OpError, SolveError, ValidationError},
-	geom::{Axis, Direction, Rect, Slot},
-	ids::{NodeId, Revision},
-	limits::{LeafMeta, WeightPair, canonicalize_weights},
-	nav::best_neighbor,
-	preset::{PresetKind, apply_preset_subtree},
-	resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
-	snapshot::Snapshot,
-	solver::{SolverPolicy, summarize},
-	tree::Tree,
+use {
+	crate::{
+		error::{NavError, OpError, SolveError, ValidationError},
+		geom::{Axis, Direction, Rect, Slot},
+		ids::{NodeId, Revision},
+		limits::{LeafMeta, WeightPair, canonicalize_weights},
+		nav::best_neighbor,
+		preset::{PresetKind, apply_preset_subtree},
+		resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
+		snapshot::Snapshot,
+		solver::{SolverPolicy, summarize},
+		tree::Tree,
+	},
+	serde::{Deserialize, Serialize},
+	std::collections::HashMap,
 };
 
 /// Rebalancing policy for the currently selected subtree.
@@ -620,8 +620,10 @@ fn map_op_to_nav(error: OpError) -> Option<NavError> {
 
 #[cfg(test)]
 mod tests {
-	use super::map_op_to_nav;
-	use crate::{NavError, OpError, ValidationError};
+	use {
+		super::map_op_to_nav,
+		crate::{NavError, OpError, ValidationError},
+	};
 
 	#[test]
 	fn nav_compatible_op_errors_map_exactly() {

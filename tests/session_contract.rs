@@ -1,9 +1,11 @@
 mod common;
 
-use common::root_rect;
-use libtiler::{
-	Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, Slot,
-	SolverPolicy, TallPreset, ValidationError, WeightPair,
+use {
+	common::root_rect,
+	libtiler::{
+		Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, Slot,
+		SolverPolicy, TallPreset, ValidationError, WeightPair,
+	},
 };
 
 fn two_leaf_session() -> Session<u8> {
