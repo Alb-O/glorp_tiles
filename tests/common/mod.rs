@@ -490,14 +490,12 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 			}
 			11 if nodes.len() > 1 && !splits.is_empty() => {
 				let split = splits[usize::from(byte) % splits.len()];
-				let targets = nodes
-					.iter()
-					.copied()
-					.filter(|target| *target != split)
-					.collect::<Vec<_>>();
-				if let Some(target) = targets.get(usize::from(byte) % targets.len()) {
+				// Pick from the implicit `nodes - {split}` sequence without allocating that filtered
+				// vector on every trace step.
+				let target_idx = usize::from(byte) % (nodes.len() - 1);
+				if let Some(target) = nodes.iter().copied().filter(|target| *target != split).nth(target_idx) {
 					let _ = prepare_selected_split(&mut session, split);
-					let _ = session.move_selection_as_sibling_of(*target, axis(byte), slot(byte));
+					let _ = session.move_selection_as_sibling_of(target, axis(byte), slot(byte));
 				}
 			}
 			_ => {}

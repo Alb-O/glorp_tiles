@@ -118,13 +118,12 @@ fn mirror_swap_and_move_round_trip_behaviors_hold() {
 fn split_remove_roundtrip_returns_original_layout() {
 	let mut session = exercise_trace(&[0, 1, 0, 3]);
 	let original_root = session.tree().root_id();
-	let mut original_nodes = session
+	let original_nodes = session
 		.tree()
 		.node_ids()
 		.into_iter()
 		.map(|id| (id, snapshot_node(session.tree(), id)))
 		.collect::<Vec<_>>();
-	original_nodes.sort_by_key(|(id, _)| *id);
 	let original_snap = session
 		.solve(root_rect(20, 10), &SolverPolicy::default())
 		.expect("solve");
@@ -137,13 +136,12 @@ fn split_remove_roundtrip_returns_original_layout() {
 		.solve(root_rect(20, 10), &SolverPolicy::default())
 		.expect("solve");
 
-	let mut roundtrip_nodes = session
+	let roundtrip_nodes = session
 		.tree()
 		.node_ids()
 		.into_iter()
 		.map(|id| (id, snapshot_node(session.tree(), id)))
 		.collect::<Vec<_>>();
-	roundtrip_nodes.sort_by_key(|(id, _)| *id);
 	assert_eq!(session.tree().root_id(), original_root);
 	assert_eq!(roundtrip_nodes, original_nodes);
 	assert_eq!(roundtrip.node_rects(), original_snap.node_rects());

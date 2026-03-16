@@ -109,44 +109,46 @@ pub(crate) fn distribute_resize(
 			out
 		}
 		ResizeStrategy::DistributedBySlack => {
-			let total_slack = eligible.iter().map(|entry| entry.slack(sign)).sum::<u32>();
+			let slacks = eligible.iter().map(|entry| entry.slack(sign)).collect::<Vec<_>>();
+			let total_slack = slacks.iter().copied().sum::<u32>();
 			if total_slack == 0 {
 				return Vec::new();
 			}
 			let request = amount.min(total_slack);
-			let mut assigned = 0_u32;
-			let mut allocations = eligible
-				.iter()
-				.enumerate()
-				.map(|(idx, entry)| {
-					let slack = entry.slack(sign);
-					let product = u128::from(request) * u128::from(slack);
-					let base = u32::try_from(product / u128::from(total_slack)).expect("base resize share exceeds u32");
-					let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder exceeds u32");
-					// `request <= total_slack`, so the floored base share can never exceed this split's
-					// own slack; any leftover units are handled by the remainder pass below.
-					assigned += base;
-					(idx, slack, base, remainder)
-				})
-				.collect::<Vec<_>>();
+			let mut assigned = 0;
+			let mut bases = Vec::with_capacity(slacks.len());
+			let mut remainders = Vec::with_capacity(slacks.len());
+			for slack in slacks.iter().copied() {
+				let product = u128::from(request) * u128::from(slack);
+				let base = u32::try_from(product / u128::from(total_slack)).expect("base resize share exceeds u32");
+				let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder exceeds u32");
+				// `request <= total_slack`, so the floored base share can never exceed this split's
+				// own slack; any leftover units are handled by the remainder pass below.
+				assigned += base;
+				bases.push(base);
+				remainders.push(remainder);
+			}
 			let mut leftover = request - assigned;
 			// Use largest-remainder apportionment after flooring proportional shares; tie-break by
-			// original eligible order to keep the result deterministic.
-			allocations.sort_unstable_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
-			for (_, slack, base, _) in &mut allocations {
+			// original eligible order to keep the result deterministic, then emit the final answer in
+			// that same nearest-first order without re-sorting the base allocations.
+			let mut order = (0..eligible.len()).collect::<Vec<_>>();
+			order.sort_unstable_by_key(|idx| (std::cmp::Reverse(remainders[*idx]), *idx));
+			for idx in order {
 				if leftover == 0 {
 					break;
 				}
-				if *base < *slack {
-					*base += 1;
+				// The floored pass can leave unassigned units but never over-assign, so the remainder
+				// pass only needs to top up entries that still have slack left.
+				if bases[idx] < slacks[idx] {
+					bases[idx] += 1;
 					leftover -= 1;
 				}
 			}
-			// Return to nearest-first order so callers can apply deltas without re-sorting.
-			allocations.sort_unstable_by_key(|(idx, ..)| *idx);
-			allocations
+			bases
 				.into_iter()
-				.filter_map(|(idx, _, base, _)| (base != 0).then_some((idx, base)))
+				.enumerate()
+				.filter_map(|(idx, base)| (base != 0).then_some((idx, base)))
 				.collect()
 		}
 	}

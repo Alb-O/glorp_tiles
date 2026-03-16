@@ -669,16 +669,8 @@ impl<T> Tree<T> {
 	/// The returned vector starts with `id` and ends with the root. Returns `None` when `id` is
 	/// not present in the tree.
 	#[must_use]
-	pub fn path_to_root(&self, mut id: NodeId) -> Option<Vec<NodeId>> {
-		if !self.contains(id) {
-			return None;
-		}
-		let mut out = vec![id];
-		while let Some(parent) = self.parent_of(id) {
-			out.push(parent);
-			id = parent;
-		}
-		Some(out)
+	pub fn path_to_root(&self, id: NodeId) -> Option<Vec<NodeId>> {
+		self.collect_parent_chain(id, true)
 	}
 
 	/// Returns the ancestors of `id` from nearest parent to root.
@@ -686,16 +678,7 @@ impl<T> Tree<T> {
 	/// `id` itself is not included. Returns `None` when `id` is not present in the tree.
 	#[must_use]
 	pub fn ancestors_nearest_first(&self, id: NodeId) -> Option<Vec<NodeId>> {
-		if !self.contains(id) {
-			return None;
-		}
-		let mut out = Vec::new();
-		let mut cursor = self.parent_of(id);
-		while let Some(parent) = cursor {
-			out.push(parent);
-			cursor = self.parent_of(parent);
-		}
-		Some(out)
+		self.collect_parent_chain(id, false)
 	}
 
 	/// Returns `true` if `needle` occurs anywhere inside the subtree rooted at `root`.
@@ -816,6 +799,21 @@ impl<T> Tree<T> {
 			self.collect_split_ids(b, out);
 			out.push(id);
 		}
+	}
+
+	fn collect_parent_chain(&self, id: NodeId, include_self: bool) -> Option<Vec<NodeId>> {
+		if !self.contains(id) {
+			return None;
+		}
+		// `include_self = false` starts at the parent so the same helper can serve both
+		// `path_to_root` and `ancestors_nearest_first` without post-processing.
+		let mut cursor = include_self.then_some(id).or_else(|| self.parent_of(id));
+		let mut out = Vec::new();
+		while let Some(id) = cursor {
+			out.push(id);
+			cursor = self.parent_of(id);
+		}
+		Some(out)
 	}
 
 	fn swap_parent_slots(&mut self, parent: NodeId) {

@@ -61,39 +61,39 @@ fn chain_session() -> (Session<u8>, NodeId, Vec<NodeId>) {
 }
 
 fn distributed_allocations(eligible: &[common::RefEligibleSplit], request: u32, sign: i8) -> Vec<(NodeId, u32)> {
-	let total_slack = eligible.iter().map(|entry| entry.slack(sign)).sum::<u32>();
+	let slacks = eligible.iter().map(|entry| entry.slack(sign)).collect::<Vec<_>>();
+	let total_slack = slacks.iter().copied().sum::<u32>();
 	if total_slack == 0 {
 		return Vec::new();
 	}
 	let request = request.min(total_slack);
-	let mut assigned = 0_u32;
-	let mut allocations = eligible
-		.iter()
-		.enumerate()
-		.map(|(idx, entry)| {
-			let slack = entry.slack(sign);
-			let product = u128::from(request) * u128::from(slack);
-			let base = u32::try_from(product / u128::from(total_slack)).expect("base share should fit u32");
-			let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder should fit u32");
-			assigned += base;
-			(idx, slack, base, remainder)
-		})
-		.collect::<Vec<_>>();
+	let mut assigned = 0;
+	let mut bases = Vec::with_capacity(slacks.len());
+	let mut remainders = Vec::with_capacity(slacks.len());
+	for slack in slacks.iter().copied() {
+		let product = u128::from(request) * u128::from(slack);
+		let base = u32::try_from(product / u128::from(total_slack)).expect("base share should fit u32");
+		let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder should fit u32");
+		assigned += base;
+		bases.push(base);
+		remainders.push(remainder);
+	}
 	let mut leftover = request - assigned;
-	allocations.sort_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
-	for (_, slack, base, _) in &mut allocations {
+	let mut order = (0..eligible.len()).collect::<Vec<_>>();
+	order.sort_unstable_by_key(|idx| (std::cmp::Reverse(remainders[*idx]), *idx));
+	for idx in order {
 		if leftover == 0 {
 			break;
 		}
-		if *base < *slack {
-			*base += 1;
+		if bases[idx] < slacks[idx] {
+			bases[idx] += 1;
 			leftover -= 1;
 		}
 	}
-	allocations.sort_by_key(|(idx, ..)| *idx);
-	allocations
+	bases
 		.into_iter()
-		.filter_map(|(idx, _, delta, _)| (delta != 0).then_some((eligible[idx].split, delta)))
+		.enumerate()
+		.filter_map(|(idx, delta)| (delta != 0).then_some((eligible[idx].split, delta)))
 		.collect()
 }
 

@@ -345,15 +345,11 @@ impl<T> Session<T> {
 	///
 	/// This does not bump the revision.
 	pub fn set_focus_leaf(&mut self, id: NodeId) -> Result<(), OpError> {
-		let old_focus = self.focus;
-		let old_selection = self.selection;
 		self.require_leaf(id)?;
 		self.focus = Some(id);
-		self.repair_selection_for_current_focus();
-		self.validate_targeting().map_err(OpError::Validation).inspect_err(|_| {
-			self.focus = old_focus;
-			self.selection = old_selection;
-		})
+		self.selection = Some(self.selection_for_focus(id, self.selection));
+		debug_assert!(self.validate_targeting().is_ok());
+		Ok(())
 	}
 
 	/// Sets the current selection.
@@ -361,8 +357,6 @@ impl<T> Session<T> {
 	/// Selecting a leaf also moves focus to that leaf. Selecting a split requires the current
 	/// focused leaf to already lie inside that split. This does not bump the revision.
 	pub fn set_selection(&mut self, id: NodeId) -> Result<(), OpError> {
-		let old_focus = self.focus;
-		let old_selection = self.selection;
 		self.require_node(id)?;
 		if self.tree.is_leaf(id) {
 			self.focus = Some(id);
@@ -374,10 +368,8 @@ impl<T> Session<T> {
 			}
 			self.selection = Some(id);
 		}
-		self.validate_targeting().map_err(OpError::Validation).inspect_err(|_| {
-			self.focus = old_focus;
-			self.selection = old_selection;
-		})
+		debug_assert!(self.validate_targeting().is_ok());
+		Ok(())
 	}
 
 	/// Inserts the first root leaf into an empty session.
@@ -610,9 +602,7 @@ impl<T> Session<T> {
 			if delta == 0 {
 				continue;
 			}
-			let info = eligible
-				.get(eligible_idx)
-				.expect("eligible split index should come from distribute_resize");
+			let info = eligible[eligible_idx];
 			let new_a = if sign > 0 {
 				info.current_a + delta
 			} else {
@@ -642,14 +632,7 @@ impl<T> Session<T> {
 			replacement_site.and_then(|id| self.tree.first_leaf(id))
 		};
 
-		// Preserve the caller's subtree selection only when it still contains the surviving focus;
-		// otherwise collapse targeting back to that focus.
-		self.selection = match (root, self.focus) {
-			(None, _) | (_, None) => None,
-			(Some(_), Some(focus)) => old_selection
-				.filter(|selection| self.selection_contains_focus(*selection, focus))
-				.or(Some(focus)),
-		};
+		self.selection = self.focus.map(|focus| self.selection_for_focus(focus, old_selection));
 	}
 
 	fn repair_selection_for_current_focus(&mut self) {
@@ -657,11 +640,7 @@ impl<T> Session<T> {
 			self.selection = None;
 			return;
 		};
-		self.selection = self
-			.selection
-			.filter(|selection| self.selection_contains_focus(*selection, focus))
-			.filter(|selection| self.tree.is_split(*selection))
-			.or(Some(focus));
+		self.selection = Some(self.selection_for_focus(focus, self.selection));
 	}
 
 	fn selection_contains_focus(&self, selection: NodeId, focus: NodeId) -> bool {
@@ -670,6 +649,14 @@ impl<T> Session<T> {
 		} else {
 			self.tree.contains_in_subtree(selection, focus)
 		}
+	}
+
+	fn selection_for_focus(&self, focus: NodeId, selection: Option<NodeId>) -> NodeId {
+		// Session targeting only preserves split selections that still contain the focused leaf; a
+		// leaf selection is equivalent to selecting the focus itself, so it collapses back to `focus`.
+		selection
+			.filter(|selection| self.tree.is_split(*selection) && self.selection_contains_focus(*selection, focus))
+			.unwrap_or(focus)
 	}
 
 	fn ensure_fresh_snapshot(&self, snap: &Snapshot) -> Result<(), OpError> {
