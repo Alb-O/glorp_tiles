@@ -703,7 +703,7 @@ impl<T> Tree<T> {
 	/// A node is considered to be inside its own subtree.
 	#[must_use]
 	pub fn contains_in_subtree(&self, root: NodeId, needle: NodeId) -> bool {
-		if !self.contains(root) || !self.contains(needle) {
+		if !self.contains(needle) {
 			return false;
 		}
 		let mut cursor = Some(needle);

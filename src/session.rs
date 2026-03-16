@@ -387,8 +387,7 @@ impl<T> Session<T> {
 		let id = self.tree.insert_root(payload, meta)?;
 		self.focus = Some(id);
 		self.selection = Some(id);
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
+		self.finish_revisioned_mutation()?;
 		Ok(id)
 	}
 
@@ -408,8 +407,7 @@ impl<T> Session<T> {
 			.parent_of(new_leaf)
 			.expect("newly inserted split sibling should have a parent split");
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
+		self.finish_revisioned_mutation()?;
 		Ok(new_leaf)
 	}
 
@@ -429,8 +427,7 @@ impl<T> Session<T> {
 			.parent_of(new_leaf)
 			.expect("wrapped node should be attached under a new split");
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
+		self.finish_revisioned_mutation()?;
 		Ok(new_leaf)
 	}
 
@@ -444,9 +441,7 @@ impl<T> Session<T> {
 		let old_selection = self.selection;
 		let fallback = self.tree.remove_leaf(focus)?;
 		self.repair_after_mutation(focus, old_selection, fallback);
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
-		Ok(())
+		self.finish_revisioned_mutation()
 	}
 
 	/// Swaps two distinct, structurally disjoint nodes.
@@ -458,9 +453,7 @@ impl<T> Session<T> {
 		let old_selection = self.selection;
 		self.tree.swap_nodes(a, b)?;
 		self.repair_after_mutation(focus, old_selection, self.tree.root_id());
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
-		Ok(())
+		self.finish_revisioned_mutation()
 	}
 
 	/// Moves the selected subtree so it becomes a sibling of `target`.
@@ -477,9 +470,7 @@ impl<T> Session<T> {
 			.tree
 			.move_subtree_as_sibling_of(selection, target, axis, slot, None)?;
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)?;
-		Ok(())
+		self.finish_revisioned_mutation()
 	}
 
 	/// Moves focus to the best solved leaf neighbor in `dir`.
@@ -547,8 +538,7 @@ impl<T> Session<T> {
 	pub fn toggle_axis(&mut self) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
 		self.tree.toggle_split_axis(selection)?;
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)
+		self.finish_revisioned_mutation()
 	}
 
 	/// Mirrors the selected subtree across `axis`.
@@ -559,8 +549,7 @@ impl<T> Session<T> {
 		if !self.tree.mirror_subtree(selection, axis)? {
 			return Ok(());
 		}
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)
+		self.finish_revisioned_mutation()
 	}
 
 	/// Rebalances split weights within the selected subtree according to `mode`.
@@ -575,8 +564,7 @@ impl<T> Session<T> {
 		if !changed {
 			return Ok(());
 		}
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)
+		self.finish_revisioned_mutation()
 	}
 
 	/// Rebuilds the selected subtree to match `preset`.
@@ -593,8 +581,7 @@ impl<T> Session<T> {
 		};
 
 		self.repair_after_mutation(focus, Some(rebuilt), Some(rebuilt));
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)
+		self.finish_revisioned_mutation()
 	}
 
 	fn resize_focus(
@@ -638,8 +625,7 @@ impl<T> Session<T> {
 		if !changed {
 			return Ok(());
 		}
-		self.bump_revision();
-		self.validate_targeting().map_err(OpError::Validation)
+		self.finish_revisioned_mutation()
 	}
 
 	fn repair_after_mutation(
@@ -725,6 +711,11 @@ impl<T> Session<T> {
 
 	fn bump_revision(&mut self) {
 		self.revision += 1;
+	}
+
+	fn finish_revisioned_mutation(&mut self) -> Result<(), OpError> {
+		self.bump_revision();
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 }
 

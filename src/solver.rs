@@ -141,17 +141,12 @@ pub fn choose_extent_with_score(spec: PairSpec, policy: &SolverPolicy) -> (u32, 
 /// 4. tie-break
 #[must_use]
 pub fn score(spec: PairSpec, a: u32, policy: &SolverPolicy) -> ScoreTuple {
-	let size_a = a;
 	let size_b = spec.total - a;
-	let short_a = spec.min_a.saturating_sub(size_a);
+	let short_a = spec.min_a.saturating_sub(a);
 	let short_b = spec.min_b.saturating_sub(size_b);
-	let over_a = spec.max_a.map_or(0, |max| size_a.saturating_sub(max));
+	let over_a = spec.max_a.map_or(0, |max| a.saturating_sub(max));
 	let over_b = spec.max_b.map_or(0, |max| size_b.saturating_sub(max));
 	let pref = pref_penalty(spec.total, a, spec.wa, spec.wb);
-	let tie_break = match policy.tie_break {
-		TieBreakMode::PreferA => u128::from(spec.total - a),
-		TieBreakMode::PreferB => u128::from(a),
-	};
 
 	ScoreTuple {
 		shortage_penalty: match policy.shortage_mode {
@@ -164,7 +159,7 @@ pub fn score(spec: PairSpec, a: u32, policy: &SolverPolicy) -> ScoreTuple {
 			OverflowMode::Uniform => u128::from(over_a) + u128::from(over_b),
 		},
 		preference_penalty: pref,
-		tie_break,
+		tie_break: tie_break_value(spec.total, a, policy.tie_break),
 	}
 }
 
@@ -215,6 +210,8 @@ fn shortage_min_interval(spec: PairSpec, policy: &SolverPolicy) -> Interval {
 	let lo = spec.total.saturating_sub(spec.min_b);
 	let hi = spec.min_a.min(spec.total);
 	if hi <= lo {
+		// Minima already overlap or cross, so every shortage minimizer lies in the closed interval
+		// between them; keep it normalized for later intersection logic.
 		Interval { lo: hi, hi: lo }
 	} else {
 		match cost_a.cmp(&cost_b) {

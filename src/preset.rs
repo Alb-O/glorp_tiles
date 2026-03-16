@@ -134,8 +134,9 @@ pub enum PresetKind {
 pub(crate) fn validate_preset(preset: PresetKind) -> Result<(), OpError> {
 	match preset {
 		PresetKind::Balanced(_) | PresetKind::Dwindle(_) => Ok(()),
-		PresetKind::Tall(preset) => validate_root_weights(preset.root_weights),
-		PresetKind::Wide(preset) => validate_root_weights(preset.root_weights),
+		PresetKind::Tall(TallPreset { root_weights, .. }) | PresetKind::Wide(WidePreset { root_weights, .. }) => {
+			validate_root_weights(root_weights)
+		}
 	}
 }
 
@@ -170,17 +171,12 @@ pub(crate) fn apply_preset_subtree<T>(
 	if tree.is_leaf(selection) {
 		return Ok(None);
 	}
-	let leaves = tree
-		.leaf_ids_dfs(selection)
-		.expect("validated selection should exist for preset rebuild");
+	let (leaves, split_ids) = collect_rebuild_parts(tree, selection);
 	if subtree_matches_preset_with_leaves(tree, selection, &leaves, preset) {
 		return Ok(None);
 	}
 
 	let parent = tree.parent_of(selection);
-	let split_ids = tree
-		.split_ids_postorder(selection)
-		.expect("validated selection should exist for preset rebuild");
 
 	for leaf in &leaves {
 		tree.set_parent(*leaf, None);
@@ -189,7 +185,7 @@ pub(crate) fn apply_preset_subtree<T>(
 		tree.remove_node(split);
 	}
 
-	let rebuilt = build_preset_subtree_validated(tree, &leaves, preset);
+	let rebuilt = build_preset_subtree(tree, &leaves, preset).expect("validated preset rebuild should succeed");
 	if let Some(parent) = parent {
 		tree.replace_child(parent, selection, rebuilt);
 	} else {
@@ -200,8 +196,27 @@ pub(crate) fn apply_preset_subtree<T>(
 	Ok(Some(rebuilt))
 }
 
-fn build_preset_subtree_validated<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: PresetKind) -> NodeId {
-	build_preset_subtree(tree, leaves, preset).expect("validated preset rebuild should succeed")
+fn collect_rebuild_parts<T>(tree: &Tree<T>, root: NodeId) -> (Vec<NodeId>, Vec<NodeId>) {
+	let mut leaves = Vec::new();
+	let mut split_ids = Vec::new();
+	collect_rebuild_parts_inner(tree, root, &mut leaves, &mut split_ids);
+	(leaves, split_ids)
+}
+
+fn collect_rebuild_parts_inner<T>(tree: &Tree<T>, id: NodeId, leaves: &mut Vec<NodeId>, split_ids: &mut Vec<NodeId>) {
+	if let Some(split) = tree.split(id) {
+		// One DFS yields both artifacts the rebuild needs: stable leaf order for reconstruction and
+		// descendant-first split order for teardown.
+		collect_rebuild_parts_inner(tree, split.a(), leaves, split_ids);
+		collect_rebuild_parts_inner(tree, split.b(), leaves, split_ids);
+		split_ids.push(id);
+	} else {
+		debug_assert!(
+			tree.is_leaf(id),
+			"validated preset rebuild should only visit leaves or splits"
+		);
+		leaves.push(id);
+	}
 }
 
 fn build_balanced<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: BalancedPreset) -> Result<NodeId, OpError> {
@@ -212,14 +227,7 @@ fn build_balanced<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: BalancedPres
 		return Ok(leaves[0]);
 	}
 	let mid = leaves.len().div_ceil(2);
-	let next_preset = BalancedPreset {
-		start_axis: if preset.alternate {
-			preset.start_axis.toggled()
-		} else {
-			preset.start_axis
-		},
-		alternate: preset.alternate,
-	};
+	let next_preset = next_balanced_preset(preset);
 	let a = build_balanced(tree, &leaves[..mid], next_preset)?;
 	let b = build_balanced(tree, &leaves[mid..], next_preset)?;
 	Ok(new_internal_split(
@@ -238,14 +246,16 @@ fn build_dwindle<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis, slot: Slo
 	// Build from the tail inward so each step wraps the subtree that would appear "after" the next
 	// leaf in stable DFS order.
 	let mut subtree = last;
-	let toggled_axis = axis.toggled();
-	for (idx, leaf) in rest.iter().copied().enumerate().rev() {
-		let split_axis = if idx % 2 == 0 { axis } else { toggled_axis };
+	// Reverse iteration flips the alternation parity relative to the public root axis, so seed the
+	// first rebuilt split with the axis that would have appeared deepest in forward construction.
+	let mut split_axis = if rest.len() % 2 == 0 { axis.toggled() } else { axis };
+	for leaf in rest.iter().copied().rev() {
 		let (a, b) = match slot {
 			Slot::A => (subtree, leaf),
 			Slot::B => (leaf, subtree),
 		};
 		subtree = new_internal_split(tree, split_axis, a, b, WeightPair::default());
+		split_axis = split_axis.toggled();
 	}
 	Ok(subtree)
 }
@@ -288,11 +298,10 @@ fn build_equal_linear<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis) -> R
 		return Err(OpError::Empty);
 	};
 	let mut subtree = last;
-	for (idx, leaf) in rest.iter().copied().enumerate().rev() {
-		// `remaining` counts the leaves already packed into `subtree`, so the next split can use
-		// leaf-count weights without a second traversal.
-		let remaining = rest.len() - idx;
-		subtree = new_internal_split(tree, axis, leaf, subtree, leaf_count_weights(1, remaining));
+	for (subtree_leaf_count, leaf) in (1..).zip(rest.iter().copied().rev()) {
+		// The zipped counter tracks the leaves already packed into `subtree`, so the next split can
+		// reuse it directly instead of recovering the same number from reverse indices.
+		subtree = new_internal_split(tree, axis, leaf, subtree, leaf_count_weights(1, subtree_leaf_count));
 	}
 	Ok(subtree)
 }
@@ -314,14 +323,7 @@ fn matches_balanced<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: Ba
 	if split.weights() != leaf_count_weights(mid, leaves.len() - mid) {
 		return false;
 	}
-	let next = BalancedPreset {
-		start_axis: if preset.alternate {
-			preset.start_axis.toggled()
-		} else {
-			preset.start_axis
-		},
-		alternate: preset.alternate,
-	};
+	let next = next_balanced_preset(preset);
 	matches_balanced(tree, split.a(), &leaves[..mid], next) && matches_balanced(tree, split.b(), &leaves[mid..], next)
 }
 
@@ -428,6 +430,17 @@ fn leaf_count_weights(a: usize, b: usize) -> WeightPair {
 		u32::try_from(a).expect("preset leaf count exceeds u32"),
 		u32::try_from(b).expect("preset leaf count exceeds u32"),
 	)
+}
+
+fn next_balanced_preset(preset: BalancedPreset) -> BalancedPreset {
+	BalancedPreset {
+		start_axis: if preset.alternate {
+			preset.start_axis.toggled()
+		} else {
+			preset.start_axis
+		},
+		alternate: preset.alternate,
+	}
 }
 
 fn validate_root_weights(weights: WeightPair) -> Result<(), OpError> {

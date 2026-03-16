@@ -86,13 +86,13 @@ pub(crate) fn distribute_resize(
 	amount: u32, strategy: ResizeStrategy, sign: i8, eligible: &[EligibleSplit],
 ) -> Vec<(usize, u32)> {
 	match strategy {
-		ResizeStrategy::Local => eligible
-			.first()
-			.and_then(|entry| {
-				let delta = amount.min(entry.slack(sign));
-				(delta != 0).then_some(vec![(0, delta)])
-			})
-			.unwrap_or_default(),
+		ResizeStrategy::Local => {
+			let Some(entry) = eligible.first() else {
+				return Vec::new();
+			};
+			let delta = amount.min(entry.slack(sign));
+			if delta == 0 { Vec::new() } else { vec![(0, delta)] }
+		}
 		ResizeStrategy::AncestorChain => {
 			let mut remaining = amount;
 			let mut out = Vec::with_capacity(eligible.len());
@@ -132,7 +132,7 @@ pub(crate) fn distribute_resize(
 			let mut leftover = request - assigned;
 			// Use largest-remainder apportionment after flooring proportional shares; tie-break by
 			// original eligible order to keep the result deterministic.
-			allocations.sort_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
+			allocations.sort_unstable_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
 			for (_, slack, base, _) in &mut allocations {
 				if leftover == 0 {
 					break;
@@ -142,7 +142,8 @@ pub(crate) fn distribute_resize(
 					leftover -= 1;
 				}
 			}
-			allocations.sort_by_key(|(idx, ..)| *idx);
+			// Return to nearest-first order so callers can apply deltas without re-sorting.
+			allocations.sort_unstable_by_key(|(idx, ..)| *idx);
 			allocations
 				.into_iter()
 				.filter_map(|(idx, _, base, _)| (base != 0).then_some((idx, base)))
