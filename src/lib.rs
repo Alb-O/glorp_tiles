@@ -66,6 +66,7 @@
 //!
 //! - [`ValidationError`] reports invalid tree or session structure
 //! - [`SolveError`] separates invalid input from strict infeasibility
+//! - [`NeighborError`] reports invalid low-level tree/snapshot navigation queries
 //! - [`NavError`] and [`OpError`] report stale or foreign snapshots and invalid session operations
 //!
 //! Determinism:
@@ -73,6 +74,7 @@
 //! - leaf ids remain stable while those leaves survive; split ids remain stable until removed or
 //!   rebuilt
 //! - solving uses deterministic scoring and tie-breaking
+//! - [`Snapshot::node_rects()`] iterates in stable ascending [`NodeId`] order
 //! - navigation and resize operations consume a snapshot bound to one live session instance and revision
 //! - [`NodeId`] is strongly typed and round-trips through serde as its numeric raw form
 //!
@@ -113,7 +115,7 @@ pub mod solver;
 pub mod tree;
 
 /// Error types returned by solving, validation, navigation, and session operations.
-pub use error::{NavError, OpError, SolveError, ValidationError};
+pub use error::{NavError, NeighborError, OpError, SolveError, ValidationError};
 /// Geometry primitives and directional vocabulary used throughout the crate.
 pub use geom::{Axis, Direction, Rect, Slot};
 /// Strongly typed identifier for a node inside a single [`Tree`] or [`Session`].

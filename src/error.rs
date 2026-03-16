@@ -78,6 +78,28 @@ impl Display for SolveError {
 
 impl std::error::Error for SolveError {}
 
+/// Failure returned by low-level neighbor lookup on a solved tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NeighborError {
+	/// The input tree failed structural validation before navigation began.
+	Validation(ValidationError),
+	/// The referenced current node id does not exist in the tree.
+	MissingNode(NodeId),
+	/// The current node exists but is not a leaf.
+	NotLeaf(NodeId),
+	/// The snapshot is missing a solved rectangle for the referenced node or another leaf needed by
+	/// the query.
+	MissingSnapshotRect(NodeId),
+}
+
+impl Display for NeighborError {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{self:?}")
+	}
+}
+
+impl std::error::Error for NeighborError {}
+
 /// Failure returned by geometry-based focus navigation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavError {

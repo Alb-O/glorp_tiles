@@ -15,7 +15,7 @@ use {
 		limits::WeightPair,
 	},
 	serde::{Deserialize, Serialize},
-	std::collections::HashMap,
+	std::collections::BTreeMap,
 };
 
 /// Lexicographic score used when comparing candidate split allocations.
@@ -83,11 +83,13 @@ pub struct Violation {
 /// violations discovered after solving, and `strict_feasible` is `true` exactly when
 /// `violations.is_empty()`. Free solver entry points produce ownerless snapshots; session entry
 /// points additionally bind the snapshot to one live session instance for geometry commands.
+///
+/// `node_rects` iterates in stable ascending [`NodeId`] order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
 	revision: Revision,
 	root: Rect,
-	node_rects: HashMap<NodeId, Rect>,
+	node_rects: BTreeMap<NodeId, Rect>,
 	split_traces: Vec<SplitTrace>,
 	violations: Vec<Violation>,
 	strict_feasible: bool,
@@ -116,7 +118,9 @@ impl Snapshot {
 		Self {
 			revision,
 			root,
-			node_rects: HashMap::with_capacity(node_capacity),
+			// We keep sorted storage for deterministic external iteration; only the vec fields
+			// benefit from the node-count hint.
+			node_rects: BTreeMap::new(),
 			split_traces: Vec::with_capacity(node_capacity.saturating_sub(1)),
 			violations: Vec::new(),
 			strict_feasible: true,
@@ -133,7 +137,7 @@ impl Snapshot {
 		self.owner
 	}
 
-	pub(crate) fn node_rects_mut(&mut self) -> &mut HashMap<NodeId, Rect> {
+	pub(crate) fn node_rects_mut(&mut self) -> &mut BTreeMap<NodeId, Rect> {
 		&mut self.node_rects
 	}
 
@@ -162,8 +166,11 @@ impl Snapshot {
 	}
 
 	/// Returns the solved rectangles for every node reached during the solve.
+	///
+	/// This includes split nodes as well as leaves. Iteration order is stable ascending [`NodeId`]
+	/// order, which makes it suitable for deterministic IDE-side caches and serialization.
 	#[must_use]
-	pub fn node_rects(&self) -> &HashMap<NodeId, Rect> {
+	pub fn node_rects(&self) -> &BTreeMap<NodeId, Rect> {
 		&self.node_rects
 	}
 

@@ -1,6 +1,6 @@
 use glorp_tiles::{
-	Axis, Direction, LeafMeta, NavError, NodeId, Rect, Session, SizeLimits, Slot, SolverPolicy, Tree, solve,
-	solve_with_revision,
+	Axis, Direction, LeafMeta, NavError, NeighborError, NodeId, Rect, Session, SizeLimits, Slot, SolverPolicy, Tree,
+	nav::best_neighbor, solve, solve_with_revision,
 };
 
 #[test]
@@ -67,11 +67,86 @@ fn session_from_tree_with_state_rejects_invalid_selection() {
 	let root = tree.root_id().expect("root should exist");
 
 	assert_eq!(
-		Session::from_tree_with_state(tree, right, left),
+		Session::from_tree_with_state(tree, Some(right), Some(left)),
 		Err(glorp_tiles::ValidationError::InvalidSelection(left))
 	);
 	assert_ne!(left, right);
 	assert!(root != left && root != right);
+}
+
+#[test]
+fn session_from_tree_with_state_handles_empty_and_rejects_partial_state() {
+	let empty = Session::<&'static str>::from_tree_with_state(Tree::new(), None, None).expect("empty session");
+	assert_eq!(empty.focus(), None);
+	assert_eq!(empty.selection(), None);
+
+	let mut tree = Tree::new();
+	let leaf = tree.insert_root("main", LeafMeta::default()).expect("insert root");
+	let partial_focus = Session::from_tree_with_state(tree.clone(), Some(leaf), None);
+	let partial_selection = Session::from_tree_with_state(tree, None, Some(leaf));
+
+	assert_eq!(partial_focus, Err(glorp_tiles::ValidationError::EmptyStateInconsistent));
+	assert_eq!(
+		partial_selection,
+		Err(glorp_tiles::ValidationError::EmptyStateInconsistent)
+	);
+}
+
+#[test]
+fn best_neighbor_reports_checked_query_errors() {
+	let mut tree = Tree::new();
+	let left = tree.insert_root("left", LeafMeta::default()).expect("insert root");
+	let right = tree
+		.split_leaf(left, Axis::X, Slot::B, "right", LeafMeta::default(), None)
+		.expect("split leaf");
+	let root = tree.root_id().expect("root should exist");
+	let snapshot = solve(
+		&tree,
+		Rect {
+			x: 0,
+			y: 0,
+			w: 10,
+			h: 4,
+		},
+		&SolverPolicy::default(),
+	)
+	.expect("solve");
+
+	assert_eq!(
+		best_neighbor(&Tree::<&'static str>::new(), &snapshot, left, Direction::Left),
+		Ok(None)
+	);
+	assert_eq!(
+		best_neighbor(&tree, &snapshot, NodeId::from_raw(999), Direction::Left),
+		Err(NeighborError::MissingNode(NodeId::from_raw(999)))
+	);
+	assert_eq!(
+		best_neighbor(&tree, &snapshot, root, Direction::Left),
+		Err(NeighborError::NotLeaf(root))
+	);
+	assert_eq!(best_neighbor(&tree, &snapshot, left, Direction::Left), Ok(None));
+	assert_eq!(best_neighbor(&tree, &snapshot, left, Direction::Right), Ok(Some(right)));
+
+	let mut partial = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+	let node_rects = partial["node_rects"]
+		.as_object_mut()
+		.expect("snapshot node_rects should serialize as an object");
+	node_rects.remove(&right.to_string());
+	let partial_snapshot = serde_json::from_value(partial).expect("snapshot should deserialize");
+	assert_eq!(
+		best_neighbor(&tree, &partial_snapshot, left, Direction::Right),
+		Err(NeighborError::MissingSnapshotRect(right))
+	);
+
+	let mut invalid = serde_json::to_value(&tree).expect("tree should serialize");
+	invalid["root"] = serde_json::json!(999);
+	let invalid_tree: Tree<String> = serde_json::from_value(invalid).expect("tree should deserialize");
+	assert_eq!(
+		best_neighbor(&invalid_tree, &snapshot, left, Direction::Right),
+		Err(NeighborError::Validation(glorp_tiles::ValidationError::MissingRoot(
+			NodeId::from_raw(999)
+		)))
+	);
 }
 
 #[test]

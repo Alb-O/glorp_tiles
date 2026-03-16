@@ -18,6 +18,7 @@ The library is intentionally split into two layers.
 
 Public modules are re-exported from `glorp_tiles` for ergonomic use.
 `NodeId` is a strongly typed handle that round-trips through serde as its numeric raw form.
+`Snapshot::node_rects()` iterates in stable ascending `NodeId` order, including split nodes.
 
 ## Example
 
@@ -85,6 +86,9 @@ Behavior notes:
 - geometry-driven commands reject snapshots from other live `Session` instances
 - free solver snapshots are inspectable, but session geometry commands require a snapshot created
   by that same live `Session`
+- `Session::from_tree_with_state(tree, None, None)` restores an empty persisted session, while
+  partial state is rejected
+- `glorp_tiles::nav::best_neighbor` validates the tree/snapshot pair and reports checked errors
 - some leaf-targeted subtree operations are no-ops or errors according to the
   library API
 

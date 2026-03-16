@@ -5,14 +5,14 @@ use {
 		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PairSpec, PresetKind, RebalanceMode, Rect, ResizeStrategy,
 		ScoreTuple, Session, ShortageMode, SizeLimits, Slot, SolverPolicy, TallPreset, TieBreakMode, Tree, WidePreset,
 	},
-	std::collections::HashMap,
+	std::collections::{BTreeMap, HashMap},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefSnapshot {
 	pub revision: u64,
 	pub root: Rect,
-	pub node_rects: HashMap<NodeId, Rect>,
+	pub node_rects: BTreeMap<NodeId, Rect>,
 	pub split_traces: Vec<glorp_tiles::SplitTrace>,
 	pub violations: Vec<glorp_tiles::Violation>,
 	pub strict_feasible: bool,
@@ -234,7 +234,7 @@ pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: Sol
 	let mut snapshot = RefSnapshot {
 		revision,
 		root,
-		node_rects: HashMap::new(),
+		node_rects: BTreeMap::new(),
 		split_traces: Vec::new(),
 		violations: Vec::new(),
 		strict_feasible: true,

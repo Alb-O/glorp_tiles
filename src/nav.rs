@@ -6,6 +6,7 @@
 
 use {
 	crate::{
+		error::NeighborError,
 		geom::{Axis, Direction, Rect, orth_gap},
 		ids::NodeId,
 		snapshot::Snapshot,
@@ -29,13 +30,51 @@ pub struct NavScore {
 
 /// Returns the best solved leaf neighbor of `current` in `dir`.
 ///
-/// `snap` is expected to contain solved rectangles for leaves of the same tree. If `current` has
-/// no rectangle, the tree is empty, or no candidate lies in the directional half-plane, this
-/// returns `None`.
-#[must_use]
-pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: Direction) -> Option<NodeId> {
-	let current_rect = snap.rect(current)?;
-	let root = tree.root_id()?;
+/// The tree is validated first. Empty trees return `Ok(None)`. Valid non-empty queries require
+/// `current` to name a leaf in `tree`, and `snap` must contain solved rectangles for `current`
+/// and every leaf in that same tree.
+///
+/// This is the checked low-level navigation helper for callers working directly with [`Tree`] and
+/// free-solver snapshots. [`crate::Session::focus_dir`] layers live-session ownership and revision
+/// checks on top of the same geometric ranking.
+///
+/// ```
+/// use glorp_tiles::{Axis, Direction, LeafMeta, Rect, Slot, SolverPolicy, Tree, nav::best_neighbor, solve};
+///
+/// let mut tree = Tree::new();
+/// let left = tree.insert_root("left", LeafMeta::default())?;
+/// let right = tree.split_leaf(left, Axis::X, Slot::B, "right", LeafMeta::default(), None)?;
+/// let snap = solve(&tree, Rect { x: 0, y: 0, w: 10, h: 4 }, &SolverPolicy::default())?;
+///
+/// assert_eq!(best_neighbor(&tree, &snap, left, Direction::Right)?, Some(right));
+/// assert_eq!(best_neighbor(&tree, &snap, left, Direction::Left)?, None);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn best_neighbor<T>(
+	tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: Direction,
+) -> Result<Option<NodeId>, NeighborError> {
+	tree.validate().map_err(NeighborError::Validation)?;
+	let Some(root) = tree.root_id() else {
+		return Ok(None);
+	};
+	if !tree.contains(current) {
+		return Err(NeighborError::MissingNode(current));
+	}
+	if !tree.is_leaf(current) {
+		return Err(NeighborError::NotLeaf(current));
+	}
+	let current_rect = snap.rect(current).ok_or(NeighborError::MissingSnapshotRect(current))?;
+	// Checked low-level navigation treats a partial snapshot as invalid input rather than silently
+	// changing "no candidate" behavior based on whichever leaves happen to be present.
+	if let Some(id) = first_missing_leaf_rect(tree, snap, root) {
+		return Err(NeighborError::MissingSnapshotRect(id));
+	}
+	Ok(best_neighbor_unchecked(tree, snap, root, current, current_rect, dir))
+}
+
+fn best_neighbor_unchecked<T>(
+	tree: &Tree<T>, snap: &Snapshot, root: NodeId, current: NodeId, current_rect: Rect, dir: Direction,
+) -> Option<NodeId> {
 	let mut best = None;
 	let mut rank = 0;
 	let _ = tree.visit_leaves_dfs(root, &mut |id| {
@@ -50,6 +89,19 @@ pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: D
 		ControlFlow::<()>::Continue(())
 	});
 	best.map(|(id, _)| id)
+}
+
+fn first_missing_leaf_rect<T>(tree: &Tree<T>, snap: &Snapshot, root: NodeId) -> Option<NodeId> {
+	match tree.visit_leaves_dfs(root, &mut |id| {
+		if snap.rect(id).is_some() {
+			ControlFlow::Continue(())
+		} else {
+			ControlFlow::Break(id)
+		}
+	}) {
+		ControlFlow::Continue(()) => None,
+		ControlFlow::Break(id) => Some(id),
+	}
 }
 
 /// Scores `candidate` as a directional neighbor of `current`.

@@ -21,7 +21,7 @@
 
 use {
 	crate::{
-		error::{NavError, OpError, SolveError, ValidationError},
+		error::{NavError, NeighborError, OpError, SolveError, ValidationError},
 		geom::{Axis, Direction, Rect, Slot},
 		ids::{NodeId, Revision, SessionOwner},
 		limits::{LeafMeta, WeightPair, canonicalize_weights},
@@ -33,7 +33,7 @@ use {
 		tree::Tree,
 	},
 	serde::{Deserialize, Serialize},
-	std::{collections::HashMap, ops::ControlFlow},
+	std::collections::HashMap,
 };
 
 /// Rebalancing policy for the currently selected subtree.
@@ -164,14 +164,33 @@ impl<T> Session<T> {
 
 	/// Creates a session from `tree` with explicit focus and selection state.
 	///
-	/// `focus` must point at a leaf, and `selection` must be either that same leaf or a split that
+	/// Empty trees require `focus == None` and `selection == None`. Non-empty trees require
+	/// `focus` to point at a leaf, and `selection` must be either that same leaf or a split that
 	/// contains it. This is the lossless bridge for editors that persist both topology and targeting
-	/// state across process boundaries.
-	pub fn from_tree_with_state(tree: Tree<T>, focus: NodeId, selection: NodeId) -> Result<Self, ValidationError> {
+	/// state across process boundaries, including the empty-session case. Partial state such as
+	/// `Some(focus)` with `None` selection is rejected.
+	///
+	/// ```
+	/// use glorp_tiles::{LeafMeta, Session, Tree};
+	///
+	/// let empty = Session::<&'static str>::from_tree_with_state(Tree::new(), None, None)?;
+	/// assert_eq!(empty.focus(), None);
+	/// assert_eq!(empty.selection(), None);
+	///
+	/// let mut tree = Tree::new();
+	/// let leaf = tree.insert_root("main", LeafMeta::default())?;
+	/// let session = Session::from_tree_with_state(tree, Some(leaf), Some(leaf))?;
+	/// assert_eq!(session.focus(), Some(leaf));
+	/// assert_eq!(session.selection(), Some(leaf));
+	/// # Ok::<(), Box<dyn std::error::Error>>(())
+	/// ```
+	pub fn from_tree_with_state(
+		tree: Tree<T>, focus: Option<NodeId>, selection: Option<NodeId>,
+	) -> Result<Self, ValidationError> {
 		let session = Self {
 			tree,
-			focus: Some(focus),
-			selection: Some(selection),
+			focus,
+			selection,
 			revision: 0,
 			owner: SessionOwner::fresh(),
 		};
@@ -438,9 +457,13 @@ impl<T> Session<T> {
 	pub fn focus_dir(&mut self, dir: Direction, snap: &Snapshot) -> Result<(), NavError> {
 		self.ensure_fresh_snapshot(snap)
 			.map_err(|error| map_op_to_nav(error).expect("focus_dir should only map nav-compatible op errors"))?;
+		// Revalidate the session-side invariant before delegating so the low-level helper can treat
+		// missing/non-leaf focus cases as unreachable here.
+		self.validate_targeting().map_err(NavError::Validation)?;
 		let focus = self.focus.ok_or(NavError::Empty)?;
-		self.ensure_leaf_rects_present(snap)?;
-		let next = best_neighbor(&self.tree, snap, focus, dir).ok_or(NavError::NoCandidate)?;
+		let next = best_neighbor(&self.tree, snap, focus, dir)
+			.map_err(map_neighbor_to_nav)?
+			.ok_or(NavError::NoCandidate)?;
 		self.focus = Some(next);
 		self.repair_selection_for_current_focus();
 		self.validate_targeting().map_err(NavError::Validation)
@@ -586,22 +609,6 @@ impl<T> Session<T> {
 		self.validate_targeting().map_err(OpError::Validation)
 	}
 
-	fn ensure_leaf_rects_present(&self, snap: &Snapshot) -> Result<(), NavError> {
-		let Some(root) = self.tree.root_id() else {
-			return Ok(());
-		};
-		match self.tree.visit_leaves_dfs(root, &mut |id| {
-			if snap.rect(id).is_some() {
-				ControlFlow::Continue(())
-			} else {
-				ControlFlow::Break(id)
-			}
-		}) {
-			ControlFlow::Continue(()) => Ok(()),
-			ControlFlow::Break(id) => Err(NavError::MissingSnapshotRect(id)),
-		}
-	}
-
 	fn repair_after_mutation(
 		&mut self, old_focus: NodeId, old_selection: Option<NodeId>, replacement_site: Option<NodeId>,
 	) {
@@ -702,6 +709,19 @@ fn map_op_to_nav(error: OpError) -> Option<NavError> {
 		| OpError::SameNode
 		| OpError::AncestorConflict
 		| OpError::TargetInsideSelection => None,
+	}
+}
+
+fn map_neighbor_to_nav(error: NeighborError) -> NavError {
+	match error {
+		NeighborError::Validation(err) => NavError::Validation(err),
+		NeighborError::MissingSnapshotRect(id) => NavError::MissingSnapshotRect(id),
+		NeighborError::MissingNode(id) => {
+			unreachable!("focus_dir validated session targeting, but focused node {id} was missing")
+		}
+		NeighborError::NotLeaf(id) => {
+			unreachable!("focus_dir validated session targeting, but focused node {id} was not a leaf")
+		}
 	}
 }
 
