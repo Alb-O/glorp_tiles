@@ -27,6 +27,7 @@ use {
 		geom::{Axis, Slot},
 		ids::NodeId,
 		limits::{LeafMeta, WeightPair, canonicalize_weights, leaf_meta_is_valid},
+		preset::{PresetKind, apply_preset_subtree},
 	},
 	serde::{Deserialize, Serialize},
 	std::{
@@ -181,9 +182,21 @@ impl<T> Node<T> {
 			Self::Split(_) => None,
 		}
 	}
+
+	#[must_use]
+	fn as_leaf_mut(&mut self) -> Option<&mut LeafNode<T>> {
+		match self {
+			Self::Leaf(leaf) => Some(leaf),
+			Self::Split(_) => None,
+		}
+	}
 }
 
 /// Validated single-root binary split topology.
+///
+/// `Tree` is the crate's direct-editing layer: it exposes structural mutation, leaf payload and
+/// metadata updates, stable node ids, and free solving without focus or selection state. Use
+/// [`crate::Session`] when you also need editor-style targeting state or geometry-driven commands.
 ///
 /// Node ids are allocated monotonically within a tree. Leaves keep their ids while they survive;
 /// split ids keep their ids until that split is removed or a subtree rebuild replaces it.
@@ -191,7 +204,7 @@ impl<T> Node<T> {
 pub struct Tree<T> {
 	root: Option<NodeId>,
 	nodes: HashMap<NodeId, Node<T>>,
-	next_id: NodeId,
+	next_id_raw: u64,
 }
 
 impl<T> Default for Tree<T> {
@@ -199,7 +212,7 @@ impl<T> Default for Tree<T> {
 		Self {
 			root: None,
 			nodes: HashMap::new(),
-			next_id: 1,
+			next_id_raw: 1,
 		}
 	}
 }
@@ -288,7 +301,12 @@ impl<T> Tree<T> {
 				if self.nodes.is_empty() {
 					Ok(())
 				} else {
-					let extra = self.nodes.keys().copied().min().unwrap_or_default();
+					let extra = self
+						.nodes
+						.keys()
+						.copied()
+						.min()
+						.expect("non-empty node map should have a minimum id");
 					Err(ValidationError::Unreachable(extra))
 				}
 			}
@@ -317,7 +335,7 @@ impl<T> Tree<T> {
 		if node.parent() != expected_parent {
 			return Err(ValidationError::ParentMismatch {
 				node: id,
-				expected: expected_parent.unwrap_or_default(),
+				expected: expected_parent,
 				actual: node.parent(),
 			});
 		}
@@ -366,6 +384,152 @@ impl<T> Tree<T> {
 	#[must_use]
 	pub fn parent_of(&self, id: NodeId) -> Option<NodeId> {
 		self.nodes.get(&id).and_then(Node::parent)
+	}
+
+	/// Inserts the first root leaf into an empty tree.
+	///
+	/// The inserted leaf becomes the tree root.
+	pub fn insert_root(&mut self, payload: T, meta: LeafMeta) -> Result<NodeId, OpError> {
+		if self.root_id().is_some() {
+			return Err(OpError::NonEmpty);
+		}
+		validate_leaf_meta(&meta)?;
+		let id = self.new_leaf(payload, meta);
+		self.set_root(Some(id));
+		self.validate().map_err(OpError::Validation)?;
+		Ok(id)
+	}
+
+	/// Splits an existing leaf by inserting a new sibling leaf.
+	///
+	/// Returns the newly inserted leaf id. The existing leaf keeps its id, and the returned leaf is
+	/// attached next to it under a new split parent.
+	pub fn split_leaf(
+		&mut self, leaf: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
+	) -> Result<NodeId, OpError> {
+		if !self.contains(leaf) {
+			return Err(OpError::MissingNode(leaf));
+		}
+		if !self.is_leaf(leaf) {
+			return Err(OpError::NotLeaf(leaf));
+		}
+		validate_leaf_meta(&meta)?;
+		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
+		let new_leaf = self.new_leaf(payload, meta);
+		self.attach_as_sibling(leaf, new_leaf, axis, slot, weights);
+		self.validate().map_err(OpError::Validation)?;
+		Ok(new_leaf)
+	}
+
+	/// Wraps `target` together with a newly inserted sibling leaf.
+	///
+	/// Returns the newly inserted leaf id. Unlike [`Self::split_leaf`], `target` may be either a
+	/// leaf or an existing split subtree.
+	pub fn wrap_node(
+		&mut self, target: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
+	) -> Result<NodeId, OpError> {
+		if !self.contains(target) {
+			return Err(OpError::MissingNode(target));
+		}
+		validate_leaf_meta(&meta)?;
+		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
+		let new_leaf = self.new_leaf(payload, meta);
+		self.attach_as_sibling(target, new_leaf, axis, slot, weights);
+		self.validate().map_err(OpError::Validation)?;
+		Ok(new_leaf)
+	}
+
+	/// Removes `leaf` and collapses any unary parent introduced by the removal.
+	///
+	/// Returns the surviving replacement site, or `None` when the tree becomes empty. Removing the
+	/// only root leaf empties the tree.
+	pub fn remove_leaf(&mut self, leaf: NodeId) -> Result<Option<NodeId>, OpError> {
+		if !self.contains(leaf) {
+			return Err(OpError::MissingNode(leaf));
+		}
+		if !self.is_leaf(leaf) {
+			return Err(OpError::NotLeaf(leaf));
+		}
+		// The internal helper only fails for missing/non-leaf ids, which we've ruled out above.
+		let removed = self
+			.remove_leaf_and_collapse(leaf)
+			.map(RemoveLeafResult::replacement_site)
+			.expect("validated leaf removal should succeed");
+		self.validate().map_err(OpError::Validation)?;
+		Ok(removed)
+	}
+
+	/// Swaps two distinct, structurally disjoint nodes.
+	pub fn swap_nodes(&mut self, a: NodeId, b: NodeId) -> Result<(), OpError> {
+		if a == b {
+			return Err(OpError::SameNode);
+		}
+		if !self.contains(a) {
+			return Err(OpError::MissingNode(a));
+		}
+		if !self.contains(b) {
+			return Err(OpError::MissingNode(b));
+		}
+		if self.contains_in_subtree(a, b) || self.contains_in_subtree(b, a) {
+			return Err(OpError::AncestorConflict);
+		}
+		self.swap_disjoint_nodes(a, b)
+			.expect("validated disjoint tree swap should succeed");
+		self.validate().map_err(OpError::Validation)
+	}
+
+	/// Moves `selection` so it becomes a sibling of `target`.
+	///
+	/// Returns the newly introduced split id. `target` may be an ancestor of `selection`; the move
+	/// is interpreted relative to the subtree that remains after detaching `selection`.
+	pub fn move_subtree_as_sibling_of(
+		&mut self, selection: NodeId, target: NodeId, axis: Axis, slot: Slot, weights: Option<WeightPair>,
+	) -> Result<NodeId, OpError> {
+		let split = self.move_subtree_as_sibling_of_inner(
+			selection,
+			target,
+			axis,
+			slot,
+			weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?,
+		)?;
+		self.validate().map_err(OpError::Validation)?;
+		Ok(split)
+	}
+
+	/// Replaces the payload stored in `leaf`.
+	///
+	/// Payload changes do not affect validation or solved geometry.
+	pub fn set_leaf_payload(&mut self, leaf: NodeId, payload: T) -> Result<(), OpError> {
+		let Some(leaf) = self.nodes.get_mut(&leaf).and_then(Node::as_leaf_mut) else {
+			return if self.contains(leaf) {
+				Err(OpError::NotLeaf(leaf))
+			} else {
+				Err(OpError::MissingNode(leaf))
+			};
+		};
+		leaf.payload = payload;
+		Ok(())
+	}
+
+	/// Replaces the sizing metadata stored in `leaf`.
+	///
+	/// Returns `true` when the metadata changed. Metadata is validated atomically; invalid metadata
+	/// leaves the tree unchanged.
+	pub fn set_leaf_meta(&mut self, leaf: NodeId, meta: LeafMeta) -> Result<bool, OpError> {
+		validate_leaf_meta(&meta)?;
+		let Some(leaf) = self.nodes.get_mut(&leaf).and_then(Node::as_leaf_mut) else {
+			return if self.contains(leaf) {
+				Err(OpError::NotLeaf(leaf))
+			} else {
+				Err(OpError::MissingNode(leaf))
+			};
+		};
+		let changed = leaf.meta != meta;
+		if changed {
+			leaf.meta = meta;
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(changed)
 	}
 
 	pub(crate) fn new_leaf(&mut self, payload: T, meta: LeafMeta) -> NodeId {
@@ -605,13 +769,13 @@ impl<T> Tree<T> {
 		std::mem::swap(&mut split.a, &mut split.b);
 	}
 
-	pub(crate) fn toggle_split_axis(&mut self, id: NodeId) -> Option<()> {
+	fn toggle_split_axis_inner(&mut self, id: NodeId) -> Option<()> {
 		let split = self.split_mut(id)?;
 		split.set_axis(split.axis().toggled());
 		Some(())
 	}
 
-	pub(crate) fn set_split_weights(&mut self, id: NodeId, weights: WeightPair) -> Option<bool> {
+	fn set_split_weights_inner(&mut self, id: NodeId, weights: WeightPair) -> Option<bool> {
 		let split = self.split_mut(id)?;
 		let changed = split.weights() != weights;
 		if changed {
@@ -620,34 +784,103 @@ impl<T> Tree<T> {
 		Some(changed)
 	}
 
-	pub(crate) fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Option<bool> {
+	/// Toggles the axis of `split`.
+	///
+	/// This preserves child ids and weights while flipping `X <-> Y`.
+	pub fn toggle_split_axis(&mut self, split: NodeId) -> Result<(), OpError> {
+		self.toggle_split_axis_inner(split).ok_or_else(|| {
+			if self.contains(split) {
+				OpError::NotSplit(split)
+			} else {
+				OpError::MissingNode(split)
+			}
+		})?;
+		self.validate().map_err(OpError::Validation)
+	}
+
+	/// Replaces the relative weight preference stored on `split`.
+	///
+	/// Returns `true` when the weights changed. Invalid all-zero weights are rejected.
+	pub fn set_split_weights(&mut self, split: NodeId, weights: WeightPair) -> Result<bool, OpError> {
+		let weights = weights.checked().ok_or(OpError::InvalidWeights)?;
+		let changed = self.set_split_weights_inner(split, weights).ok_or_else(|| {
+			if self.contains(split) {
+				OpError::NotSplit(split)
+			} else {
+				OpError::MissingNode(split)
+			}
+		})?;
+		if changed {
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(changed)
+	}
+
+	fn rebalance_subtree_binary_equal_inner(&mut self, id: NodeId) -> Option<bool> {
 		match self.children_of(id) {
 			Some((a, b)) => {
-				let changed_a = self.rebalance_subtree_binary_equal(a)?;
-				let changed_b = self.rebalance_subtree_binary_equal(b)?;
-				let changed_here = self.set_split_weights(id, WeightPair::default())?;
+				let changed_a = self.rebalance_subtree_binary_equal_inner(a)?;
+				let changed_b = self.rebalance_subtree_binary_equal_inner(b)?;
+				let changed_here = self.set_split_weights_inner(id, WeightPair::default())?;
 				Some(changed_a || changed_b || changed_here)
 			}
 			None => Some(false),
 		}
 	}
 
-	pub(crate) fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Option<(u32, bool)> {
+	fn rebalance_subtree_leaf_count_inner(&mut self, id: NodeId) -> Option<(u32, bool)> {
 		match self.children_of(id) {
 			Some((a, b)) => {
-				let (count_a, changed_a) = self.rebalance_subtree_leaf_count(a)?;
-				let (count_b, changed_b) = self.rebalance_subtree_leaf_count(b)?;
-				let changed_here = self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
+				let (count_a, changed_a) = self.rebalance_subtree_leaf_count_inner(a)?;
+				let (count_b, changed_b) = self.rebalance_subtree_leaf_count_inner(b)?;
+				let changed_here = self.set_split_weights_inner(id, canonicalize_weights(count_a, count_b))?;
 				Some((count_a + count_b, changed_a || changed_b || changed_here))
 			}
 			None => Some((1, false)),
 		}
 	}
 
-	pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) -> bool {
+	/// Rebalances every split in the subtree rooted at `id` to equal `1:1` weights.
+	///
+	/// Returns `true` when any split weights changed. Leaf roots return [`OpError::NotSplit`].
+	pub fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Result<bool, OpError> {
+		let changed = self.rebalance_subtree_binary_equal_inner(id).ok_or_else(|| {
+			if self.contains(id) {
+				OpError::NotSplit(id)
+			} else {
+				OpError::MissingNode(id)
+			}
+		})?;
+		if changed {
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(changed)
+	}
+
+	/// Rebalances every split in the subtree rooted at `id` using descendant leaf counts.
+	///
+	/// Returns `true` when any split weights changed. Leaf roots return [`OpError::NotSplit`].
+	pub fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Result<bool, OpError> {
+		let changed = self
+			.rebalance_subtree_leaf_count_inner(id)
+			.ok_or_else(|| {
+				if self.contains(id) {
+					OpError::NotSplit(id)
+				} else {
+					OpError::MissingNode(id)
+				}
+			})?
+			.1;
+		if changed {
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(changed)
+	}
+
+	fn mirror_subtree_axis_inner(&mut self, id: NodeId, axis: Axis) -> bool {
 		if let Some((a, b)) = self.children_of(id) {
-			let changed_a = self.mirror_subtree_axis(a, axis);
-			let changed_b = self.mirror_subtree_axis(b, axis);
+			let changed_a = self.mirror_subtree_axis_inner(a, axis);
+			let changed_b = self.mirror_subtree_axis_inner(b, axis);
 			let split = self.split_mut(id).expect("split missing during mirror");
 			if split.axis() == axis {
 				split.swap_children();
@@ -659,6 +892,36 @@ impl<T> Tree<T> {
 		} else {
 			false
 		}
+	}
+
+	/// Mirrors the subtree rooted at `id` across `axis`.
+	///
+	/// Returns `true` when the topology changed. Leaf roots are a no-op and return `Ok(false)`.
+	pub fn mirror_subtree(&mut self, id: NodeId, axis: Axis) -> Result<bool, OpError> {
+		if !self.contains(id) {
+			return Err(OpError::MissingNode(id));
+		}
+		let changed = self.mirror_subtree_axis_inner(id, axis);
+		if changed {
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(changed)
+	}
+
+	/// Rebuilds the subtree rooted at `id` to match `preset`.
+	///
+	/// Returns `Ok(None)` when `id` is a leaf or the subtree already matches `preset`.
+	/// Otherwise returns the rebuilt subtree root id. Existing leaf ids, payloads, and metadata are
+	/// preserved across the rebuild.
+	pub fn apply_preset(&mut self, id: NodeId, preset: PresetKind) -> Result<Option<NodeId>, OpError> {
+		if !self.contains(id) {
+			return Err(OpError::MissingNode(id));
+		}
+		let rebuilt = apply_preset_subtree(self, id, preset)?;
+		if rebuilt.is_some() {
+			self.validate().map_err(OpError::Validation)?;
+		}
+		Ok(rebuilt)
 	}
 
 	fn reattach_child(&mut self, parent: Option<NodeId>, replaced: Option<NodeId>, child: NodeId) {
@@ -740,7 +1003,7 @@ impl<T> Tree<T> {
 		split_id
 	}
 
-	pub(crate) fn move_subtree_as_sibling_of(
+	fn move_subtree_as_sibling_of_inner(
 		&mut self, selection: NodeId, target: NodeId, axis: Axis, slot: Slot, weights: WeightPair,
 	) -> Result<NodeId, OpError> {
 		if selection == target {
@@ -764,10 +1027,14 @@ impl<T> Tree<T> {
 	}
 
 	fn alloc_id(&mut self) -> NodeId {
-		let id = self.next_id;
-		self.next_id += 1;
+		let id = NodeId::from_raw(self.next_id_raw);
+		self.next_id_raw += 1;
 		id
 	}
+}
+
+fn validate_leaf_meta(meta: &LeafMeta) -> Result<(), OpError> {
+	leaf_meta_is_valid(meta).then_some(()).ok_or(OpError::InvalidLeafMeta)
 }
 
 #[cfg(test)]

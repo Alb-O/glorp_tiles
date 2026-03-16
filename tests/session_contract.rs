@@ -3,23 +3,27 @@ mod common;
 use {
 	common::root_rect,
 	glorp_tiles::{
-		Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, SizeLimits,
-		Slot, SolverPolicy, TallPreset, ValidationError, WeightPair, solve_with_revision,
+		Axis, BalancedPreset, Direction, LeafMeta, NavError, NodeId, OpError, PresetKind, ResizeStrategy, Session,
+		SizeLimits, Slot, SolverPolicy, TallPreset, ValidationError, WeightPair, solve_with_revision,
 	},
 };
 
 fn two_leaf_session() -> Session<u8> {
-	let mut session = Session::new();
-	let _ = session.insert_root(1, LeafMeta::default()).expect("insert root");
-	let _ = session
-		.split_focus(Axis::X, Slot::B, 2, LeafMeta::default(), None)
-		.expect("split root");
-	session
+	two_leaf_session_with_ids().0
 }
 
-fn three_leaf_session() -> (Session<u8>, u64) {
-	let mut session = two_leaf_session();
-	session.set_focus_leaf(2).expect("focus right leaf");
+fn two_leaf_session_with_ids() -> (Session<u8>, NodeId, NodeId) {
+	let mut session = Session::new();
+	let left = session.insert_root(1, LeafMeta::default()).expect("insert root");
+	let right = session
+		.split_focus(Axis::X, Slot::B, 2, LeafMeta::default(), None)
+		.expect("split root");
+	(session, left, right)
+}
+
+fn three_leaf_session() -> (Session<u8>, NodeId) {
+	let (mut session, _, right) = two_leaf_session_with_ids();
+	session.set_focus_leaf(right).expect("focus right leaf");
 	let leaf = session
 		.split_focus(Axis::Y, Slot::B, 3, LeafMeta::default(), None)
 		.expect("split right leaf");
@@ -193,17 +197,17 @@ fn invalid_leaf_meta_insertions_are_atomic() {
 fn tree_helpers_return_none_for_missing_ids() {
 	let session = two_leaf_session();
 	let tree = session.tree();
+	let missing = NodeId::from_raw(999);
 
-	assert_eq!(tree.path_to_root(999), None);
-	assert_eq!(tree.ancestors_nearest_first(999), None);
-	assert_eq!(tree.leaf_ids_dfs(999), None);
-	assert_eq!(tree.split_ids_postorder(999), None);
+	assert_eq!(tree.path_to_root(missing), None);
+	assert_eq!(tree.ancestors_nearest_first(missing), None);
+	assert_eq!(tree.leaf_ids_dfs(missing), None);
+	assert_eq!(tree.split_ids_postorder(missing), None);
 }
 
 #[test]
 fn targeting_helpers_preserve_invariants_without_bumping_revision() {
-	let mut session = two_leaf_session();
-	let right_leaf = 2;
+	let (mut session, left_leaf, right_leaf) = two_leaf_session_with_ids();
 	session
 		.set_selection(right_leaf)
 		.expect("select right leaf for nested split");
@@ -226,7 +230,7 @@ fn targeting_helpers_preserve_invariants_without_bumping_revision() {
 		.expect("targeting helpers should not stale a fresh snapshot");
 	session.validate().expect("state should remain valid");
 
-	session.set_focus_leaf(1).expect("set focus to left leaf");
+	session.set_focus_leaf(left_leaf).expect("set focus to left leaf");
 	assert_eq!(
 		session.set_selection(right_split),
 		Err(OpError::Validation(ValidationError::InvalidSelection(right_split,)))
@@ -298,15 +302,15 @@ fn apply_preset_noops_do_not_bump_revision() {
 
 #[test]
 fn mirror_rebalance_and_zero_effect_resize_noops_do_not_bump_revision() {
-	let mut mirror = two_leaf_session();
+	let (mut mirror, left_leaf, _) = two_leaf_session_with_ids();
 	let mirror_revision = mirror.revision();
-	mirror.set_selection(1).expect("select leaf");
+	mirror.set_selection(left_leaf).expect("select leaf");
 	mirror.mirror_selection(Axis::X).expect("leaf mirror should no-op");
 	assert_eq!(mirror.revision(), mirror_revision);
 
-	let mut rebalance = two_leaf_session();
+	let (mut rebalance, left_leaf, _) = two_leaf_session_with_ids();
 	let leaf_revision = rebalance.revision();
-	rebalance.set_selection(1).expect("select leaf");
+	rebalance.set_selection(left_leaf).expect("select leaf");
 	rebalance
 		.rebalance_selection(glorp_tiles::RebalanceMode::LeafCount)
 		.expect("leaf rebalance should no-op");

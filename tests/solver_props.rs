@@ -195,8 +195,8 @@ fn scale_symmetry_holds_with_exact_integer_arithmetic() {
 #[test]
 fn solver_handles_maximal_weights_without_panicking() {
 	let mut session = Session::new();
-	let _ = session.insert_root(1_u8, LeafMeta::default()).expect("insert root");
-	let _ = session
+	let left = session.insert_root(1_u8, LeafMeta::default()).expect("insert root");
+	let right = session
 		.split_focus(
 			Axis::X,
 			Slot::B,
@@ -213,8 +213,8 @@ fn solver_handles_maximal_weights_without_panicking() {
 		.expect("maximal weights should remain solvable");
 
 	assert!(snapshot.strict_feasible());
-	assert_eq!(snapshot.rect(1).expect("left rect").w, 6);
-	assert_eq!(snapshot.rect(2).expect("right rect").w, 6);
+	assert_eq!(snapshot.rect(left).expect("left rect").w, 6);
+	assert_eq!(snapshot.rect(right).expect("right rect").w, 6);
 }
 
 #[test]

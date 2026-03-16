@@ -13,10 +13,11 @@
 
 The library is intentionally split into two layers.
 
-- Core: topology, metadata, validation, summaries, and solving
-- Session: focus, selection, geometry-driven commands, and revision tracking
+- Core: topology, direct tree edits, metadata, validation, summaries, and solving
+- Session: focus, selection, geometry-driven commands, revision tracking, and tree/session bridges
 
 Public modules are re-exported from `glorp_tiles` for ergonomic use.
+`NodeId` is a strongly typed handle that round-trips through serde as its numeric raw form.
 
 ## Example
 

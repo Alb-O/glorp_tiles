@@ -1,9 +1,9 @@
 //! Deterministic binary split tiling for editor, window, and TUI layouts.
 //!
 //! `glorp_tiles` models a layout as a single-root binary split tree with exact half-open integer
-//! rectangles. The crate is split into two layers: [`Tree`] exposes validated topology and leaf
-//! metadata, while [`Session`] adds focus, selection, revision tracking, and geometry-driven
-//! editing commands.
+//! rectangles. The crate is split into two layers: [`Tree`] exposes validated topology, direct
+//! non-geometry editing, and leaf metadata, while [`Session`] adds focus, selection, revision
+//! tracking, and geometry-driven editing commands.
 //!
 //! Solving is deterministic and certifying. [`solve`] and [`Session::solve`] always produce a
 //! [`Snapshot`] when the tree is representable, even if some leaves exceed hard limits; callers
@@ -16,9 +16,18 @@
 //! reusing a snapshot from another session yields a foreign-snapshot error instead of silently
 //! acting on outdated or unrelated rectangles.
 //!
+//! Choosing a layer:
+//!
+//! - Use [`Tree`] when you want direct structural edits, stable ids, and free solving without
+//!   focus/selection state.
+//! - Use [`Session`] when you want editor-style targeting state and geometry-driven commands such
+//!   as directional focus movement and resize.
+//! - Convert between the two with [`Session::from_tree`], [`Session::from_tree_with_state`], and
+//!   [`Session::into_tree`].
+//!
 //! Public surface map:
 //!
-//! - Structure: [`Tree`], [`LeafNode`], [`SplitNode`], [`NodeId`]
+//! - Structure and direct editing: [`Tree`], [`LeafNode`], [`SplitNode`], [`NodeId`]
 //! - Solving: [`solve`], [`solve_strict`], [`SolverPolicy`], [`Snapshot`]
 //! - Editing: [`Session`], [`PresetKind`], [`ResizeStrategy`], [`RebalanceMode`]
 //! - Geometry and limits: [`Rect`], [`Axis`], [`Slot`], [`Direction`], [`LeafMeta`],
@@ -28,6 +37,7 @@
 //! Tree<T>
 //!   - validated topology
 //!   - stable node ids
+//!   - direct tree edits
 //!   - leaf metadata
 //!       |
 //!       v
@@ -64,6 +74,7 @@
 //!   rebuilt
 //! - solving uses deterministic scoring and tie-breaking
 //! - navigation and resize operations consume a snapshot bound to one live session instance and revision
+//! - [`NodeId`] is strongly typed and round-trips through serde as its numeric raw form
 //!
 //! ```
 //! use glorp_tiles::{
@@ -105,8 +116,8 @@ pub mod tree;
 pub use error::{NavError, OpError, SolveError, ValidationError};
 /// Geometry primitives and directional vocabulary used throughout the crate.
 pub use geom::{Axis, Direction, Rect, Slot};
-/// Opaque identifier for a node inside a single [`Tree`] or [`Session`].
-pub type NodeId = ids::NodeId;
+/// Strongly typed identifier for a node inside a single [`Tree`] or [`Session`].
+pub use ids::NodeId;
 /// Monotonic session revision used to reject stale geometry snapshots.
 pub use ids::Revision;
 /// Leaf sizing metadata, subtree summaries, and split-weight helpers.

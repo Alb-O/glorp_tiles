@@ -1,0 +1,137 @@
+use glorp_tiles::{
+	Axis, Direction, LeafMeta, NavError, NodeId, Rect, Session, SizeLimits, Slot, SolverPolicy, Tree, solve,
+	solve_with_revision,
+};
+
+#[test]
+fn direct_tree_edit_flow_matches_equivalent_session_flow() {
+	let mut tree = Tree::new();
+	let main = tree.insert_root("main", LeafMeta::default()).expect("insert root");
+	let side = tree
+		.split_leaf(main, Axis::X, Slot::B, "side", LeafMeta::default(), None)
+		.expect("split leaf");
+	let log = tree
+		.wrap_node(main, Axis::Y, Slot::B, "log", LeafMeta::default(), None)
+		.expect("wrap node");
+
+	let mut session = Session::new();
+	let main_session = session.insert_root("main", LeafMeta::default()).expect("insert root");
+	let side_session = session
+		.split_focus(Axis::X, Slot::B, "side", LeafMeta::default(), None)
+		.expect("split focus");
+	let log_session = session
+		.wrap_selection(Axis::Y, Slot::B, "log", LeafMeta::default(), None)
+		.expect("wrap selection");
+
+	assert_eq!((main, side, log), (main_session, side_session, log_session));
+	assert_eq!(tree, session.tree().clone());
+
+	let root = Rect {
+		x: 0,
+		y: 0,
+		w: 120,
+		h: 40,
+	};
+	let tree_snap = solve(&tree, root, &SolverPolicy::default()).expect("tree solve");
+	let session_snap =
+		solve_with_revision(session.tree(), root, 0, &SolverPolicy::default()).expect("ownerless session solve");
+	assert_eq!(tree_snap, session_snap);
+}
+
+#[test]
+fn session_from_tree_defaults_to_first_leaf_and_roundtrips_back() {
+	let mut tree = Tree::new();
+	let main = tree.insert_root("main", LeafMeta::default()).expect("insert root");
+	let _side = tree
+		.split_leaf(main, Axis::X, Slot::B, "side", LeafMeta::default(), None)
+		.expect("split leaf");
+	let _log = tree
+		.wrap_node(main, Axis::Y, Slot::B, "log", LeafMeta::default(), None)
+		.expect("wrap node");
+	let original = tree.clone();
+
+	let session = Session::from_tree(tree).expect("session from tree");
+
+	assert_eq!(session.focus(), Some(main));
+	assert_eq!(session.selection(), Some(main));
+	assert_eq!(session.into_tree(), original);
+}
+
+#[test]
+fn session_from_tree_with_state_rejects_invalid_selection() {
+	let mut tree = Tree::new();
+	let left = tree.insert_root("left", LeafMeta::default()).expect("insert root");
+	let right = tree
+		.split_leaf(left, Axis::X, Slot::B, "right", LeafMeta::default(), None)
+		.expect("split leaf");
+	let root = tree.root_id().expect("root should exist");
+
+	assert_eq!(
+		Session::from_tree_with_state(tree, right, left),
+		Err(glorp_tiles::ValidationError::InvalidSelection(left))
+	);
+	assert_ne!(left, right);
+	assert!(root != left && root != right);
+}
+
+#[test]
+fn session_leaf_setters_preserve_identity_and_revision_contract() {
+	let mut session = Session::new();
+	let left = session.insert_root(1_u8, LeafMeta::default()).expect("insert root");
+	let _right = session
+		.split_focus(Axis::X, Slot::B, 2_u8, LeafMeta::default(), None)
+		.expect("split focus");
+	let root = Rect {
+		x: 0,
+		y: 0,
+		w: 12,
+		h: 8,
+	};
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
+	let revision = session.revision();
+
+	session
+		.set_leaf_payload(left, 9_u8)
+		.expect("payload update should succeed");
+	assert_eq!(session.revision(), revision);
+	assert_eq!(*session.tree().leaf(left).expect("leaf should exist").payload(), 9);
+	session
+		.focus_dir(Direction::Right, &snap)
+		.expect("payload updates should not stale geometry snapshots");
+
+	let changed = session
+		.set_leaf_meta(
+			left,
+			LeafMeta {
+				limits: SizeLimits {
+					min_w: 4,
+					..SizeLimits::default()
+				},
+				..LeafMeta::default()
+			},
+		)
+		.expect("meta update should succeed");
+	assert!(changed);
+	assert_eq!(session.revision(), revision + 1);
+	assert_eq!(session.focus_dir(Direction::Left, &snap), Err(NavError::StaleSnapshot));
+	assert_eq!(
+		session
+			.tree()
+			.leaf(left)
+			.expect("leaf should exist")
+			.meta()
+			.limits
+			.min_w,
+		4
+	);
+}
+
+#[test]
+fn node_id_display_and_serde_roundtrip_raw_value() {
+	let id = NodeId::from_raw(42);
+
+	assert_eq!(id.to_string(), "42");
+	assert_eq!(serde_json::to_string(&id).expect("serialize"), "42");
+	assert_eq!(serde_json::from_str::<NodeId>("42").expect("deserialize"), id);
+	assert_eq!(id.into_raw(), 42);
+}

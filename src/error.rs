@@ -25,8 +25,8 @@ pub enum ValidationError {
 	ParentMismatch {
 		/// Node with the mismatched parent pointer.
 		node: NodeId,
-		/// Expected parent id, using `0` when no parent should exist.
-		expected: NodeId,
+		/// Expected parent id, or `None` when no parent should exist.
+		expected: Option<NodeId>,
 		/// Actual stored parent pointer.
 		actual: Option<NodeId>,
 	},

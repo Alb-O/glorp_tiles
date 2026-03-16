@@ -24,13 +24,13 @@ use {
 		error::{NavError, OpError, SolveError, ValidationError},
 		geom::{Axis, Direction, Rect, Slot},
 		ids::{NodeId, Revision, SessionOwner},
-		limits::{LeafMeta, WeightPair, canonicalize_weights, leaf_meta_is_valid},
+		limits::{LeafMeta, WeightPair, canonicalize_weights},
 		nav::best_neighbor,
-		preset::{PresetKind, apply_preset_subtree},
+		preset::PresetKind,
 		resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
 		snapshot::Snapshot,
 		solver::{SolverPolicy, summarize},
-		tree::{RemoveLeafResult, Tree},
+		tree::Tree,
 	},
 	serde::{Deserialize, Serialize},
 	std::{collections::HashMap, ops::ControlFlow},
@@ -122,9 +122,79 @@ impl<T> Session<T> {
 		Self::default()
 	}
 
+	/// Creates a session from `tree` using a deterministic default targeting state.
+	///
+	/// Empty trees produce empty sessions. Non-empty trees focus and select the first leaf in
+	/// depth-first `A`-before-`B` order. The resulting session starts at revision `0`, so any
+	/// session-driven geometry work should solve fresh from the returned session rather than trying
+	/// to reuse snapshots produced elsewhere.
+	///
+	/// ```
+	/// use glorp_tiles::{Axis, LeafMeta, Session, Slot, Tree};
+	///
+	/// let mut tree = Tree::new();
+	/// let main = tree.insert_root("main", LeafMeta::default())?;
+	/// let _side = tree.split_leaf(main, Axis::X, Slot::B, "side", LeafMeta::default(), None)?;
+	///
+	/// let session = Session::from_tree(tree)?;
+	/// assert_eq!(session.focus(), Some(main));
+	/// assert_eq!(session.selection(), Some(main));
+	/// # Ok::<(), Box<dyn std::error::Error>>(())
+	/// ```
+	pub fn from_tree(tree: Tree<T>) -> Result<Self, ValidationError> {
+		tree.validate()?;
+		let (focus, selection) = match tree.root_id() {
+			Some(root) => {
+				// Reuse the crate's canonical leaf order so Tree -> Session bridging stays stable.
+				let focus = tree
+					.first_leaf(root)
+					.expect("validated non-empty tree should contain a leaf");
+				(Some(focus), Some(focus))
+			}
+			None => (None, None),
+		};
+		Ok(Self {
+			tree,
+			focus,
+			selection,
+			revision: 0,
+			owner: SessionOwner::fresh(),
+		})
+	}
+
+	/// Creates a session from `tree` with explicit focus and selection state.
+	///
+	/// `focus` must point at a leaf, and `selection` must be either that same leaf or a split that
+	/// contains it. This is the lossless bridge for editors that persist both topology and targeting
+	/// state across process boundaries.
+	pub fn from_tree_with_state(tree: Tree<T>, focus: NodeId, selection: NodeId) -> Result<Self, ValidationError> {
+		let session = Self {
+			tree,
+			focus: Some(focus),
+			selection: Some(selection),
+			revision: 0,
+			owner: SessionOwner::fresh(),
+		};
+		session.validate()?;
+		Ok(session)
+	}
+
+	/// Removes session targeting state and returns the underlying tree.
+	///
+	/// The returned tree preserves all topology, ids, payloads, metadata, and split weights, but
+	/// drops focus, selection, revision, and live-session snapshot ownership.
+	#[must_use]
+	pub fn into_tree(self) -> Tree<T> {
+		self.tree
+	}
+
 	/// Validates both the underlying tree and the session targeting invariants.
 	pub fn validate(&self) -> Result<(), ValidationError> {
 		self.tree.validate()?;
+		self.validate_targeting()
+	}
+
+	fn validate_targeting(&self) -> Result<(), ValidationError> {
 		if self.tree.root_id().is_none() {
 			return if self.focus.is_none() && self.selection.is_none() {
 				Ok(())
@@ -197,6 +267,28 @@ impl<T> Session<T> {
 		self.revision
 	}
 
+	/// Replaces the payload stored in `leaf`.
+	///
+	/// Payload changes do not affect geometry and therefore do not bump the revision or stale
+	/// existing snapshots.
+	pub fn set_leaf_payload(&mut self, leaf: NodeId, payload: T) -> Result<(), OpError> {
+		self.tree.set_leaf_payload(leaf, payload)
+	}
+
+	/// Replaces the sizing metadata stored in `leaf`.
+	///
+	/// Returns `true` when the metadata changed. Geometry-affecting metadata changes bump the
+	/// revision and stale previously solved snapshots; unchanged metadata is a no-op that keeps the
+	/// current revision.
+	pub fn set_leaf_meta(&mut self, leaf: NodeId, meta: LeafMeta) -> Result<bool, OpError> {
+		let changed = self.tree.set_leaf_meta(leaf, meta)?;
+		if changed {
+			self.bump_revision();
+		}
+		self.validate_targeting().map_err(OpError::Validation)?;
+		Ok(changed)
+	}
+
 	/// Moves focus to an existing leaf and repairs selection to keep containing it.
 	///
 	/// This does not bump the revision.
@@ -206,7 +298,7 @@ impl<T> Session<T> {
 		self.require_leaf(id)?;
 		self.focus = Some(id);
 		self.repair_selection_for_current_focus();
-		self.validate().map_err(OpError::Validation).inspect_err(|_| {
+		self.validate_targeting().map_err(OpError::Validation).inspect_err(|_| {
 			self.focus = old_focus;
 			self.selection = old_selection;
 		})
@@ -230,7 +322,7 @@ impl<T> Session<T> {
 			}
 			self.selection = Some(id);
 		}
-		self.validate().map_err(OpError::Validation).inspect_err(|_| {
+		self.validate_targeting().map_err(OpError::Validation).inspect_err(|_| {
 			self.focus = old_focus;
 			self.selection = old_selection;
 		})
@@ -240,16 +332,11 @@ impl<T> Session<T> {
 	///
 	/// The inserted leaf becomes both focus and selection.
 	pub fn insert_root(&mut self, payload: T, meta: LeafMeta) -> Result<NodeId, OpError> {
-		if self.tree.root_id().is_some() {
-			return Err(OpError::NonEmpty);
-		}
-		validate_leaf_meta(&meta)?;
-		let id = self.tree.new_leaf(payload, meta);
-		self.tree.set_root(Some(id));
+		let id = self.tree.insert_root(payload, meta)?;
 		self.focus = Some(id);
 		self.selection = Some(id);
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(id)
 	}
 
@@ -262,14 +349,15 @@ impl<T> Session<T> {
 		&mut self, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
 		let focus = self.require_focus_leaf()?;
-		validate_leaf_meta(&meta)?;
-		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
 		let old_selection = self.selection;
-		let new_leaf = self.tree.new_leaf(payload, meta);
-		let split_id = self.tree.attach_as_sibling(focus, new_leaf, axis, slot, weights);
+		let new_leaf = self.tree.split_leaf(focus, axis, slot, payload, meta, weights)?;
+		let split_id = self
+			.tree
+			.parent_of(new_leaf)
+			.expect("newly inserted split sibling should have a parent split");
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(new_leaf)
 	}
 
@@ -282,19 +370,15 @@ impl<T> Session<T> {
 	) -> Result<NodeId, OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
 		let focus = self.require_focus_leaf()?;
-		validate_leaf_meta(&meta)?;
 		let old_selection = self.selection;
-		let new_leaf = self.tree.new_leaf(payload, meta);
-		let split_id = self.tree.attach_as_sibling(
-			selection,
-			new_leaf,
-			axis,
-			slot,
-			weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?,
-		);
+		let new_leaf = self.tree.wrap_node(selection, axis, slot, payload, meta, weights)?;
+		let split_id = self
+			.tree
+			.parent_of(new_leaf)
+			.expect("wrapped node should be attached under a new split");
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(new_leaf)
 	}
 
@@ -306,14 +390,10 @@ impl<T> Session<T> {
 	pub fn remove_focus(&mut self) -> Result<(), OpError> {
 		let focus = self.require_focus_leaf()?;
 		let old_selection = self.selection;
-		let fallback = self
-			.tree
-			.remove_leaf_and_collapse(focus)
-			.map(RemoveLeafResult::replacement_site)
-			.ok_or(OpError::NotLeaf(focus))?;
+		let fallback = self.tree.remove_leaf(focus)?;
 		self.repair_after_mutation(focus, old_selection, fallback);
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(())
 	}
 
@@ -322,22 +402,12 @@ impl<T> Session<T> {
 	/// Same-node swaps and ancestor/descendant swaps are rejected. Focus is preserved when its leaf
 	/// survives, and selection is repaired afterward.
 	pub fn swap_nodes(&mut self, a: NodeId, b: NodeId) -> Result<(), OpError> {
-		if a == b {
-			return Err(OpError::SameNode);
-		}
-		self.require_node(a)?;
-		self.require_node(b)?;
-		if self.tree.contains_in_subtree(a, b) || self.tree.contains_in_subtree(b, a) {
-			return Err(OpError::AncestorConflict);
-		}
 		let focus = self.require_focus_leaf()?;
 		let old_selection = self.selection;
-		self.tree
-			.swap_disjoint_nodes(a, b)
-			.expect("validated disjoint swap should succeed");
+		self.tree.swap_nodes(a, b)?;
 		self.repair_after_mutation(focus, old_selection, self.tree.root_id());
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(())
 	}
 
@@ -353,10 +423,10 @@ impl<T> Session<T> {
 		let old_selection = self.selection;
 		let split_id = self
 			.tree
-			.move_subtree_as_sibling_of(selection, target, axis, slot, WeightPair::default())?;
+			.move_subtree_as_sibling_of(selection, target, axis, slot, None)?;
 		self.repair_after_mutation(focus, old_selection, Some(split_id));
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)?;
+		self.validate_targeting().map_err(OpError::Validation)?;
 		Ok(())
 	}
 
@@ -373,7 +443,7 @@ impl<T> Session<T> {
 		let next = best_neighbor(&self.tree, snap, focus, dir).ok_or(NavError::NoCandidate)?;
 		self.focus = Some(next);
 		self.repair_selection_for_current_focus();
-		self.validate().map_err(NavError::Validation)
+		self.validate_targeting().map_err(NavError::Validation)
 	}
 
 	/// Promotes the current selection to its parent split.
@@ -385,7 +455,7 @@ impl<T> Session<T> {
 		let base = self.selection.or(self.focus).ok_or(OpError::Empty)?;
 		let parent = self.tree.parent_of(base).ok_or(OpError::NoParent(base))?;
 		self.selection = Some(parent);
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	/// Collapses the selection back to the current focus.
@@ -420,11 +490,9 @@ impl<T> Session<T> {
 	/// Selecting a leaf returns [`OpError::NotSplit`].
 	pub fn toggle_axis(&mut self) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
-		self.tree
-			.toggle_split_axis(selection)
-			.ok_or(OpError::NotSplit(selection))?;
+		self.tree.toggle_split_axis(selection)?;
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	/// Mirrors the selected subtree across `axis`.
@@ -432,11 +500,11 @@ impl<T> Session<T> {
 	/// Leaf selections are a structural no-op and do not bump the revision.
 	pub fn mirror_selection(&mut self, axis: Axis) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
-		if !self.tree.mirror_subtree_axis(selection, axis) {
+		if !self.tree.mirror_subtree(selection, axis)? {
 			return Ok(());
 		}
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	/// Rebalances split weights within the selected subtree according to `mode`.
@@ -445,22 +513,14 @@ impl<T> Session<T> {
 	pub fn rebalance_selection(&mut self, mode: RebalanceMode) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
 		let changed = match mode {
-			RebalanceMode::BinaryEqual => self
-				.tree
-				.rebalance_subtree_binary_equal(selection)
-				.ok_or(OpError::NotSplit(selection))?,
-			RebalanceMode::LeafCount => {
-				self.tree
-					.rebalance_subtree_leaf_count(selection)
-					.ok_or(OpError::NotSplit(selection))?
-					.1
-			}
+			RebalanceMode::BinaryEqual => self.tree.rebalance_subtree_binary_equal(selection)?,
+			RebalanceMode::LeafCount => self.tree.rebalance_subtree_leaf_count(selection)?,
 		};
 		if !changed {
 			return Ok(());
 		}
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	/// Rebuilds the selected subtree to match `preset`.
@@ -472,13 +532,13 @@ impl<T> Session<T> {
 	pub fn apply_preset(&mut self, preset: PresetKind) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
 		let focus = self.require_focus_leaf()?;
-		let Some(rebuilt) = apply_preset_subtree(&mut self.tree, selection, preset)? else {
+		let Some(rebuilt) = self.tree.apply_preset(selection, preset)? else {
 			return Ok(());
 		};
 
 		self.repair_after_mutation(focus, Some(rebuilt), Some(rebuilt));
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	fn resize_focus(
@@ -517,16 +577,13 @@ impl<T> Session<T> {
 			};
 			let total = info.total;
 			let weights = canonicalize_weights(new_a, total - new_a);
-			changed |= self
-				.tree
-				.set_split_weights(info.split, weights)
-				.ok_or(OpError::NotSplit(info.split))?;
+			changed |= self.tree.set_split_weights(info.split, weights)?;
 		}
 		if !changed {
 			return Ok(());
 		}
 		self.bump_revision();
-		self.validate().map_err(OpError::Validation)
+		self.validate_targeting().map_err(OpError::Validation)
 	}
 
 	fn ensure_leaf_rects_present(&self, snap: &Snapshot) -> Result<(), NavError> {
@@ -556,6 +613,8 @@ impl<T> Session<T> {
 			replacement_site.and_then(|id| self.tree.first_leaf(id))
 		};
 
+		// Preserve the caller's subtree selection only when it still contains the surviving focus;
+		// otherwise collapse targeting back to that focus.
 		self.selection = match (self.tree.root_id(), self.focus) {
 			(None, _) | (_, None) => None,
 			(Some(_), Some(focus)) => old_selection
@@ -627,10 +686,6 @@ impl<T> Session<T> {
 	}
 }
 
-fn validate_leaf_meta(meta: &LeafMeta) -> Result<(), OpError> {
-	leaf_meta_is_valid(meta).then_some(()).ok_or(OpError::InvalidLeafMeta)
-}
-
 fn map_op_to_nav(error: OpError) -> Option<NavError> {
 	match error {
 		OpError::Empty => Some(NavError::Empty),
@@ -654,7 +709,7 @@ fn map_op_to_nav(error: OpError) -> Option<NavError> {
 mod tests {
 	use {
 		super::map_op_to_nav,
-		crate::{NavError, OpError, ValidationError},
+		crate::{NavError, NodeId, OpError, ValidationError},
 	};
 
 	#[test]
@@ -663,20 +718,20 @@ mod tests {
 		assert_eq!(map_op_to_nav(OpError::ForeignSnapshot), Some(NavError::ForeignSnapshot));
 		assert_eq!(map_op_to_nav(OpError::StaleSnapshot), Some(NavError::StaleSnapshot));
 		assert_eq!(
-			map_op_to_nav(OpError::Validation(ValidationError::Cycle(7))),
-			Some(NavError::Validation(ValidationError::Cycle(7)))
+			map_op_to_nav(OpError::Validation(ValidationError::Cycle(NodeId::from_raw(7)))),
+			Some(NavError::Validation(ValidationError::Cycle(NodeId::from_raw(7))))
 		);
 		assert_eq!(
-			map_op_to_nav(OpError::MissingNode(11)),
-			Some(NavError::MissingSnapshotRect(11))
+			map_op_to_nav(OpError::MissingNode(NodeId::from_raw(11))),
+			Some(NavError::MissingSnapshotRect(NodeId::from_raw(11)))
 		);
 		assert_eq!(
-			map_op_to_nav(OpError::NotLeaf(13)),
-			Some(NavError::MissingSnapshotRect(13))
+			map_op_to_nav(OpError::NotLeaf(NodeId::from_raw(13))),
+			Some(NavError::MissingSnapshotRect(NodeId::from_raw(13)))
 		);
 		assert_eq!(
-			map_op_to_nav(OpError::NotSplit(17)),
-			Some(NavError::MissingSnapshotRect(17))
+			map_op_to_nav(OpError::NotSplit(NodeId::from_raw(17))),
+			Some(NavError::MissingSnapshotRect(NodeId::from_raw(17)))
 		);
 	}
 
@@ -684,7 +739,7 @@ mod tests {
 	fn non_nav_op_errors_do_not_synthesize_nav_behavior() {
 		assert_eq!(map_op_to_nav(OpError::NonEmpty), None);
 		assert_eq!(map_op_to_nav(OpError::InvalidWeights), None);
-		assert_eq!(map_op_to_nav(OpError::NoParent(19)), None);
+		assert_eq!(map_op_to_nav(OpError::NoParent(NodeId::from_raw(19))), None);
 		assert_eq!(map_op_to_nav(OpError::SameNode), None);
 		assert_eq!(map_op_to_nav(OpError::AncestorConflict), None);
 		assert_eq!(map_op_to_nav(OpError::TargetInsideSelection), None);
