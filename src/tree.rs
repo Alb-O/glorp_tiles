@@ -182,14 +182,6 @@ impl<T> Node<T> {
 			Self::Split(_) => None,
 		}
 	}
-
-	#[must_use]
-	fn as_leaf_mut(&mut self) -> Option<&mut LeafNode<T>> {
-		match self {
-			Self::Leaf(leaf) => Some(leaf),
-			Self::Split(_) => None,
-		}
-	}
 }
 
 /// Validated single-root binary split topology.
@@ -500,15 +492,14 @@ impl<T> Tree<T> {
 	///
 	/// Payload changes do not affect validation or solved geometry.
 	pub fn set_leaf_payload(&mut self, leaf: NodeId, payload: T) -> Result<(), OpError> {
-		let Some(leaf) = self.nodes.get_mut(&leaf).and_then(Node::as_leaf_mut) else {
-			return if self.contains(leaf) {
-				Err(OpError::NotLeaf(leaf))
-			} else {
-				Err(OpError::MissingNode(leaf))
-			};
-		};
-		leaf.payload = payload;
-		Ok(())
+		match self.nodes.get_mut(&leaf) {
+			Some(Node::Leaf(node)) => {
+				node.payload = payload;
+				Ok(())
+			}
+			Some(Node::Split(_)) => Err(OpError::NotLeaf(leaf)),
+			None => Err(OpError::MissingNode(leaf)),
+		}
 	}
 
 	/// Replaces the sizing metadata stored in `leaf`.
@@ -517,16 +508,15 @@ impl<T> Tree<T> {
 	/// leaves the tree unchanged.
 	pub fn set_leaf_meta(&mut self, leaf: NodeId, meta: LeafMeta) -> Result<bool, OpError> {
 		validate_leaf_meta(&meta)?;
-		let Some(leaf) = self.nodes.get_mut(&leaf).and_then(Node::as_leaf_mut) else {
-			return if self.contains(leaf) {
-				Err(OpError::NotLeaf(leaf))
-			} else {
-				Err(OpError::MissingNode(leaf))
-			};
+		let Some(node) = self.nodes.get_mut(&leaf) else {
+			return Err(OpError::MissingNode(leaf));
 		};
-		let changed = leaf.meta != meta;
+		let Node::Leaf(node) = node else {
+			return Err(OpError::NotLeaf(leaf));
+		};
+		let changed = node.meta != meta;
 		if changed {
-			leaf.meta = meta;
+			node.meta = meta;
 			self.validate().map_err(OpError::Validation)?;
 		}
 		Ok(changed)
@@ -954,8 +944,9 @@ impl<T> Tree<T> {
 			self.remove_node(leaf)?;
 			return Some(RemoveLeafResult::Emptied);
 		}
-		let sibling = self.sibling_of(leaf)?;
-		let replacement = self.collapse_unary_parent(leaf).unwrap_or(sibling);
+		// Collapsing the unary parent already identifies the surviving attachment site, so there is
+		// no need to probe the sibling separately before the rewrite.
+		let replacement = self.collapse_unary_parent(leaf)?;
 		self.remove_node(leaf)?;
 		Some(RemoveLeafResult::Replaced(replacement))
 	}

@@ -121,34 +121,23 @@ pub fn choose_extent(
 /// Chooses an extent for child `A` and returns the corresponding lexicographic score.
 ///
 /// The current implementation exhaustively searches `0..=total`, computes [`score`] for each
-/// candidate, and returns the deterministic minimum over `(score, tie-break key)`.
+/// candidate, and returns the deterministic minimum score.
 #[must_use]
 pub fn choose_extent_with_score(spec: PairSpec, policy: &SolverPolicy) -> (u32, ScoreTuple) {
 	let mut best_a = 0;
 	let mut best_score = score(spec, best_a, policy);
-	let mut best_key = tie_break_key(best_a, spec.total, policy.tie_break, best_score.tie_break);
 
 	for a in 1..=spec.total {
 		let candidate_score = score(spec, a, policy);
-		let candidate_key = tie_break_key(a, spec.total, policy.tie_break, candidate_score.tie_break);
-		if (candidate_score, candidate_key) < (best_score, best_key) {
+		// Strict comparison preserves the earliest `a` on ties, which matches the score's own final
+		// tie-break component and avoids carrying duplicate ordering state here.
+		if candidate_score < best_score {
 			best_a = a;
 			best_score = candidate_score;
-			best_key = candidate_key;
 		}
 	}
 
 	(best_a, best_score)
-}
-
-fn tie_break_key(a: u32, total: u32, mode: TieBreakMode, fallback: u128) -> u128 {
-	if fallback != 0 {
-		return fallback;
-	}
-	match mode {
-		TieBreakMode::PreferA => u128::from(total - a),
-		TieBreakMode::PreferB => u128::from(a),
-	}
 }
 
 /// Scores a candidate allocation for child `A`.

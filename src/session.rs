@@ -612,9 +612,12 @@ impl<T> Session<T> {
 	fn repair_after_mutation(
 		&mut self, old_focus: NodeId, old_selection: Option<NodeId>, replacement_site: Option<NodeId>,
 	) {
-		self.focus = if self.tree.root_id().is_none() {
+		let root = self.tree.root_id();
+		self.focus = if root.is_none() {
 			None
 		} else if self.tree.is_leaf(old_focus) {
+			// Most mutations preserve the focused leaf id, so keep it when it still exists instead of
+			// retargeting through tree order.
 			Some(old_focus)
 		} else {
 			replacement_site.and_then(|id| self.tree.first_leaf(id))
@@ -622,7 +625,7 @@ impl<T> Session<T> {
 
 		// Preserve the caller's subtree selection only when it still contains the surviving focus;
 		// otherwise collapse targeting back to that focus.
-		self.selection = match (self.tree.root_id(), self.focus) {
+		self.selection = match (root, self.focus) {
 			(None, _) | (_, None) => None,
 			(Some(_), Some(focus)) => old_selection
 				.filter(|selection| self.selection_contains_focus(*selection, focus))
@@ -643,12 +646,11 @@ impl<T> Session<T> {
 	}
 
 	fn selection_contains_focus(&self, selection: NodeId, focus: NodeId) -> bool {
-		self.tree.contains(selection)
-			&& if self.tree.is_leaf(selection) {
-				selection == focus
-			} else {
-				self.tree.contains_in_subtree(selection, focus)
-			}
+		if self.tree.is_leaf(selection) {
+			selection == focus
+		} else {
+			self.tree.contains_in_subtree(selection, focus)
+		}
 	}
 
 	fn ensure_fresh_snapshot(&self, snap: &Snapshot) -> Result<(), OpError> {

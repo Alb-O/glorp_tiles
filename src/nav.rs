@@ -64,43 +64,31 @@ pub fn best_neighbor<T>(
 		return Err(NeighborError::NotLeaf(current));
 	}
 	let current_rect = snap.rect(current).ok_or(NeighborError::MissingSnapshotRect(current))?;
-	// Checked low-level navigation treats a partial snapshot as invalid input rather than silently
-	// changing "no candidate" behavior based on whichever leaves happen to be present.
-	if let Some(id) = first_missing_leaf_rect(tree, snap, root) {
-		return Err(NeighborError::MissingSnapshotRect(id));
-	}
-	Ok(best_neighbor_unchecked(tree, snap, root, current, current_rect, dir))
+	best_neighbor_checked(tree, snap, root, current, current_rect, dir)
 }
 
-fn best_neighbor_unchecked<T>(
+fn best_neighbor_checked<T>(
 	tree: &Tree<T>, snap: &Snapshot, root: NodeId, current: NodeId, current_rect: Rect, dir: Direction,
-) -> Option<NodeId> {
+) -> Result<Option<NodeId>, NeighborError> {
 	let mut best = None;
 	let mut rank = 0;
-	let _ = tree.visit_leaves_dfs(root, &mut |id| {
+	match tree.visit_leaves_dfs(root, &mut |id| {
+		// Treat partial snapshots as invalid input during the same DFS that scores candidates, so
+		// checked navigation stays O(leaves) without changing error semantics.
+		let Some(candidate_rect) = snap.rect(id) else {
+			return ControlFlow::Break(Err(NeighborError::MissingSnapshotRect(id)));
+		};
 		if id != current
-			&& let Some(candidate_rect) = snap.rect(id)
 			&& let Some(score) = nav_score(current_rect, candidate_rect, dir, rank)
 			&& best.is_none_or(|(_, best_score)| score < best_score)
 		{
 			best = Some((id, score));
 		}
 		rank += 1;
-		ControlFlow::<()>::Continue(())
-	});
-	best.map(|(id, _)| id)
-}
-
-fn first_missing_leaf_rect<T>(tree: &Tree<T>, snap: &Snapshot, root: NodeId) -> Option<NodeId> {
-	match tree.visit_leaves_dfs(root, &mut |id| {
-		if snap.rect(id).is_some() {
-			ControlFlow::Continue(())
-		} else {
-			ControlFlow::Break(id)
-		}
+		ControlFlow::Continue(())
 	}) {
-		ControlFlow::Continue(()) => None,
-		ControlFlow::Break(id) => Some(id),
+		ControlFlow::Continue(()) => Ok(best.map(|(id, _)| id)),
+		ControlFlow::Break(result) => result,
 	}
 }
 
