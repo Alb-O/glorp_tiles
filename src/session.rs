@@ -32,7 +32,10 @@ use {
 		solver::{SolverPolicy, summarize},
 		tree::Tree,
 	},
-	serde::{Deserialize, Serialize},
+	serde::{
+		Deserialize, Serialize,
+		de::{self, Deserializer},
+	},
 	std::collections::HashMap,
 };
 
@@ -53,6 +56,8 @@ pub enum RebalanceMode {
 /// - a non-empty session always has a focused leaf
 /// - selection is either that focused leaf or a split that contains it
 ///
+/// Deserialization validates both the tree and targeting invariants before returning.
+///
 /// ```
 /// use glorp_tiles::{Axis, LeafMeta, Rect, Session, Slot, SolverPolicy};
 ///
@@ -64,7 +69,7 @@ pub enum RebalanceMode {
 /// assert_eq!(snapshot.node_rects().len(), 3);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Session<T> {
 	tree: Tree<T>,
 	focus: Option<NodeId>,
@@ -72,6 +77,34 @@ pub struct Session<T> {
 	revision: Revision,
 	#[serde(skip, default = "SessionOwner::fresh")]
 	owner: SessionOwner,
+}
+
+#[derive(Deserialize)]
+struct SessionWire<T> {
+	tree: Tree<T>,
+	focus: Option<NodeId>,
+	selection: Option<NodeId>,
+	revision: Revision,
+}
+
+impl<'de, T> Deserialize<'de> for Session<T>
+where
+	T: Deserialize<'de>,
+{
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: Deserializer<'de>, {
+		let wire = SessionWire::<T>::deserialize(deserializer)?;
+		let session = Self {
+			tree: wire.tree,
+			focus: wire.focus,
+			selection: wire.selection,
+			revision: wire.revision,
+			owner: SessionOwner::fresh(),
+		};
+		session.validate_targeting().map_err(de::Error::custom)?;
+		Ok(session)
+	}
 }
 
 impl<T> Clone for Session<T>
@@ -717,6 +750,9 @@ fn map_op_to_nav(error: OpError) -> Option<NavError> {
 fn map_neighbor_to_nav(error: NeighborError) -> NavError {
 	match error {
 		NeighborError::Validation(err) => NavError::Validation(err),
+		NeighborError::SnapshotTreeMismatch => {
+			unreachable!("focus_dir validated session ownership/revision, but snapshot tree fingerprint mismatched")
+		}
 		NeighborError::MissingSnapshotRect(id) => NavError::MissingSnapshotRect(id),
 		NeighborError::MissingNode(id) => {
 			unreachable!("focus_dir validated session targeting, but focused node {id} was missing")

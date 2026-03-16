@@ -31,8 +31,8 @@ pub struct NavScore {
 /// Returns the best solved leaf neighbor of `current` in `dir`.
 ///
 /// The tree is validated first. Empty trees return `Ok(None)`. Valid non-empty queries require
-/// `current` to name a leaf in `tree`, and `snap` must contain solved rectangles for `current`
-/// and every leaf in that same tree.
+/// `current` to name a leaf in `tree`, and `snap` must have been solved from the same
+/// geometry-affecting tree state and contain solved rectangles for `current` and every leaf.
 ///
 /// This is the checked low-level navigation helper for callers working directly with [`Tree`] and
 /// free-solver snapshots. [`crate::Session::focus_dir`] layers live-session ownership and revision
@@ -57,6 +57,9 @@ pub fn best_neighbor<T>(
 	let Some(root) = tree.root_id() else {
 		return Ok(None);
 	};
+	if !snap.matches_tree_validated(tree) {
+		return Err(NeighborError::SnapshotTreeMismatch);
+	}
 	if !tree.contains(current) {
 		return Err(NeighborError::MissingNode(current));
 	}

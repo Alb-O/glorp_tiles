@@ -1,20 +1,26 @@
 //! Immutable solved layout output and diagnostics.
 //!
 //! A [`Snapshot`] records the solved rectangles for one tree or session revision. It stores
-//! rectangles for every node, deterministic split-allocation traces, and any hard-limit
-//! violations observed in the solved leaf rectangles.
+//! rectangles for every node, deterministic split-allocation traces, a geometry fingerprint for
+//! tree pairing, and any hard-limit violations observed in the solved leaf rectangles.
 //!
 //! Snapshots are inspectable data objects. When produced by [`crate::Session::solve`], they also
 //! carry an internal live-session binding used to reject foreign geometry commands. That binding
-//! is intentionally not part of the public serialized form or equality semantics.
+//! is intentionally not part of the public serialized form or equality semantics, so deserialized
+//! snapshots remain inspectable and tree-checkable but cannot directly drive session geometry
+//! commands.
 
 use {
 	crate::{
 		geom::{Axis, Rect},
 		ids::{NodeId, Revision, SessionOwner},
 		limits::WeightPair,
+		tree::Tree,
 	},
-	serde::{Deserialize, Serialize},
+	serde::{
+		Deserialize, Serialize,
+		de::{self, Deserializer},
+	},
 	std::collections::BTreeMap,
 };
 
@@ -82,13 +88,19 @@ pub struct Violation {
 /// deterministic allocation decision for each split. `violations` records leaf hard-limit
 /// violations discovered after solving, and `strict_feasible` is `true` exactly when
 /// `violations.is_empty()`. Free solver entry points produce ownerless snapshots; session entry
-/// points additionally bind the snapshot to one live session instance for geometry commands.
+/// points additionally bind the snapshot to one live session instance for geometry commands. Free
+/// snapshots also carry a deterministic geometry fingerprint so low-level consumers can verify
+/// they are being paired with the same tree state they were solved from.
+///
+/// Serialization preserves the revision, diagnostics, solved rectangles, and geometry
+/// fingerprint. Deserialization intentionally restores an ownerless snapshot.
 ///
 /// `node_rects` iterates in stable ascending [`NodeId`] order.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
 	revision: Revision,
 	root: Rect,
+	tree_fingerprint: (u64, u64),
 	node_rects: BTreeMap<NodeId, Rect>,
 	split_traces: Vec<SplitTrace>,
 	violations: Vec<Violation>,
@@ -97,12 +109,48 @@ pub struct Snapshot {
 	owner: Option<SessionOwner>,
 }
 
+#[derive(Deserialize)]
+struct SnapshotWire {
+	revision: Revision,
+	root: Rect,
+	tree_fingerprint: (u64, u64),
+	node_rects: BTreeMap<NodeId, Rect>,
+	split_traces: Vec<SplitTrace>,
+	violations: Vec<Violation>,
+	strict_feasible: bool,
+}
+
+impl<'de> Deserialize<'de> for Snapshot {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: Deserializer<'de>, {
+		let wire = SnapshotWire::deserialize(deserializer)?;
+		if wire.strict_feasible != wire.violations.is_empty() {
+			return Err(de::Error::custom(
+				"snapshot strict_feasible must match whether violations is empty",
+			));
+		}
+		Ok(Self {
+			revision: wire.revision,
+			root: wire.root,
+			tree_fingerprint: wire.tree_fingerprint,
+			node_rects: wire.node_rects,
+			split_traces: wire.split_traces,
+			violations: wire.violations,
+			strict_feasible: wire.strict_feasible,
+			// Persisted snapshots are data objects, not live session capabilities.
+			owner: None,
+		})
+	}
+}
+
 impl PartialEq for Snapshot {
 	fn eq(&self, other: &Self) -> bool {
 		// Ownership is intentionally excluded so equality stays about solved geometry/diagnostics,
 		// not which live session instance produced the snapshot.
 		self.revision == other.revision
 			&& self.root == other.root
+			&& self.tree_fingerprint == other.tree_fingerprint
 			&& self.node_rects == other.node_rects
 			&& self.split_traces == other.split_traces
 			&& self.violations == other.violations
@@ -114,10 +162,13 @@ impl Eq for Snapshot {}
 
 impl Snapshot {
 	#[must_use]
-	pub(crate) fn new_unowned(revision: Revision, root: Rect, node_capacity: usize) -> Self {
+	pub(crate) fn new_unowned(
+		revision: Revision, root: Rect, tree_fingerprint: (u64, u64), node_capacity: usize,
+	) -> Self {
 		Self {
 			revision,
 			root,
+			tree_fingerprint,
 			// We keep sorted storage for deterministic external iteration; only the vec fields
 			// benefit from the node-count hint.
 			node_rects: BTreeMap::new(),
@@ -163,6 +214,20 @@ impl Snapshot {
 	#[must_use]
 	pub fn root(&self) -> Rect {
 		self.root
+	}
+
+	/// Returns whether this snapshot was solved from the same geometry-affecting tree state.
+	///
+	/// This validates `tree` before comparing. Payload-only changes do not affect the match result,
+	/// which makes this suitable for IDE-side geometry caches keyed independently from leaf
+	/// payloads.
+	pub fn matches_tree<T>(&self, tree: &Tree<T>) -> Result<bool, crate::ValidationError> {
+		tree.validate()?;
+		Ok(self.matches_tree_validated(tree))
+	}
+
+	pub(crate) fn matches_tree_validated<T>(&self, tree: &Tree<T>) -> bool {
+		self.tree_fingerprint == tree.geometry_fingerprint_validated()
 	}
 
 	/// Returns the solved rectangles for every node reached during the solve.

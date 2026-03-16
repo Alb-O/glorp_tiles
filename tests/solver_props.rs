@@ -38,6 +38,63 @@ fn tree_enumeration_is_sorted() {
 	assert!(split_ids.windows(2).all(|w| w[0] < w[1]));
 }
 
+#[test]
+fn allocator_handles_large_totals_exactly() {
+	let spec = PairSpec {
+		total: 1_000_000_000,
+		min_a: 0,
+		min_b: 0,
+		max_a: None,
+		max_b: None,
+		wa: 1,
+		wb: 3,
+		sa: 1,
+		sb: 1,
+	};
+	let (chosen, _score) = choose_extent_with_score(spec, &SolverPolicy::default());
+	assert_eq!(chosen, 250_000_000);
+}
+
+#[test]
+fn allocator_respects_tie_break_on_large_odd_totals() {
+	let spec = PairSpec {
+		total: 1_000_000_001,
+		min_a: 0,
+		min_b: 0,
+		max_a: None,
+		max_b: None,
+		wa: 1,
+		wb: 1,
+		sa: 1,
+		sb: 1,
+	};
+	let prefer_a = SolverPolicy::default();
+	let prefer_b = SolverPolicy {
+		tie_break: glorp_tiles::TieBreakMode::PreferB,
+		..SolverPolicy::default()
+	};
+
+	assert_eq!(choose_extent_with_score(spec, &prefer_a).0, 500_000_001);
+	assert_eq!(choose_extent_with_score(spec, &prefer_b).0, 500_000_000);
+}
+
+#[test]
+fn allocator_handles_large_conflicting_maxima() {
+	let spec = PairSpec {
+		total: 1_000_000_000,
+		min_a: 0,
+		min_b: 0,
+		max_a: Some(400_000_000),
+		max_b: Some(700_000_000),
+		wa: 1,
+		wb: 1,
+		sa: 1,
+		sb: 1,
+	};
+	let (chosen, _score) = choose_extent_with_score(spec, &SolverPolicy::default());
+	assert_eq!(chosen, 400_000_000);
+}
+
 proptest! {
 	#[test]
 	fn allocator_matches_oracle(

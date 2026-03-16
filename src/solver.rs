@@ -120,24 +120,15 @@ pub fn choose_extent(
 
 /// Chooses an extent for child `A` and returns the corresponding lexicographic score.
 ///
-/// The current implementation exhaustively searches `0..=total`, computes [`score`] for each
-/// candidate, and returns the deterministic minimum score.
+/// The optimizer minimizes the lexicographic score analytically instead of scanning `0..=total`.
 #[must_use]
 pub fn choose_extent_with_score(spec: PairSpec, policy: &SolverPolicy) -> (u32, ScoreTuple) {
-	let mut best_a = 0;
-	let mut best_score = score(spec, best_a, policy);
-
-	for a in 1..=spec.total {
-		let candidate_score = score(spec, a, policy);
-		// Strict comparison preserves the earliest `a` on ties, which matches the score's own final
-		// tie-break component and avoids carrying duplicate ordering state here.
-		if candidate_score < best_score {
-			best_a = a;
-			best_score = candidate_score;
-		}
-	}
-
-	(best_a, best_score)
+	// Minimize the lexicographic score one component at a time: first shortage, then overflow,
+	// then weight preference/tie-break within the surviving interval.
+	let interval = shortage_min_interval(spec, policy).project_onto_minima(overflow_min_interval(spec));
+	let (candidates, candidate_count) = preference_candidates(spec, interval);
+	let best_a = choose_preference_minimizer(spec, policy, &candidates[..candidate_count]);
+	(best_a, score(spec, best_a, policy))
 }
 
 /// Scores a candidate allocation for child `A`.
@@ -184,6 +175,122 @@ fn pref_penalty(total: u32, a: u32, wa: u32, wb: u32) -> u128 {
 	left.abs_diff(right)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Interval {
+	lo: u32,
+	hi: u32,
+}
+
+impl Interval {
+	fn singleton(value: u32) -> Self {
+		Self { lo: value, hi: value }
+	}
+
+	fn intersect(self, other: Self) -> Option<Self> {
+		let lo = self.lo.max(other.lo);
+		let hi = self.hi.min(other.hi);
+		(lo <= hi).then_some(Self { lo, hi })
+	}
+
+	fn project_onto_minima(self, minima: Self) -> Self {
+		if let Some(overlap) = self.intersect(minima) {
+			overlap
+		} else if self.hi < minima.lo {
+			Self::singleton(self.hi)
+		} else {
+			Self::singleton(self.lo)
+		}
+	}
+}
+
+fn shortage_min_interval(spec: PairSpec, policy: &SolverPolicy) -> Interval {
+	let cost_a = match policy.shortage_mode {
+		ShortageMode::Equal => 1,
+		ShortageMode::ByShrinkPriority => u128::from(spec.sa),
+	};
+	let cost_b = match policy.shortage_mode {
+		ShortageMode::Equal => 1,
+		ShortageMode::ByShrinkPriority => u128::from(spec.sb),
+	};
+	let lo = spec.total.saturating_sub(spec.min_b);
+	let hi = spec.min_a.min(spec.total);
+	if hi <= lo {
+		Interval { lo: hi, hi: lo }
+	} else {
+		match cost_a.cmp(&cost_b) {
+			std::cmp::Ordering::Greater => Interval::singleton(hi),
+			std::cmp::Ordering::Less => Interval::singleton(lo),
+			std::cmp::Ordering::Equal => Interval { lo, hi },
+		}
+	}
+}
+
+fn overflow_min_interval(spec: PairSpec) -> Interval {
+	let lo = spec.max_b.map_or(0, |max_b| spec.total.saturating_sub(max_b));
+	let hi = spec.max_a.map_or(spec.total, |max_a| max_a.min(spec.total));
+	Interval {
+		lo: lo.min(hi),
+		hi: lo.max(hi),
+	}
+}
+
+fn preference_candidates(spec: PairSpec, interval: Interval) -> ([u32; 4], usize) {
+	let mut candidates = [interval.lo; 4];
+	let mut len = 0;
+	push_candidate(&mut candidates, &mut len, interval.lo);
+	push_candidate(&mut candidates, &mut len, interval.hi);
+
+	let total_weight = u128::from(spec.wa) + u128::from(spec.wb);
+	let numerator = u128::from(spec.total) * u128::from(spec.wa);
+	if let Some(floor) = numerator
+		.checked_div(total_weight)
+		.and_then(|value| u32::try_from(value).ok())
+	{
+		let ceil = if numerator % total_weight == 0 {
+			floor
+		} else {
+			floor + 1
+		};
+		push_candidate(&mut candidates, &mut len, floor.clamp(interval.lo, interval.hi));
+		push_candidate(&mut candidates, &mut len, ceil.clamp(interval.lo, interval.hi));
+	}
+
+	(candidates, len)
+}
+
+fn push_candidate(candidates: &mut [u32; 4], len: &mut usize, candidate: u32) {
+	if candidates[..*len].contains(&candidate) {
+		return;
+	}
+	candidates[*len] = candidate;
+	*len += 1;
+}
+
+fn choose_preference_minimizer(spec: PairSpec, policy: &SolverPolicy, candidates: &[u32]) -> u32 {
+	let mut best_a = candidates[0];
+	let mut best_pref = pref_penalty(spec.total, best_a, spec.wa, spec.wb);
+	let mut best_tie_break = tie_break_value(spec.total, best_a, policy.tie_break);
+
+	for candidate in candidates.iter().copied().skip(1) {
+		let pref = pref_penalty(spec.total, candidate, spec.wa, spec.wb);
+		let tie_break = tie_break_value(spec.total, candidate, policy.tie_break);
+		if (pref, tie_break) < (best_pref, best_tie_break) {
+			best_a = candidate;
+			best_pref = pref;
+			best_tie_break = tie_break;
+		}
+	}
+
+	best_a
+}
+
+fn tie_break_value(total: u32, a: u32, mode: TieBreakMode) -> u128 {
+	match mode {
+		TieBreakMode::PreferA => u128::from(total - a),
+		TieBreakMode::PreferB => u128::from(a),
+	}
+}
+
 /// Solves `tree` into a best-effort snapshot with revision `0`.
 ///
 /// The tree is validated before solving. For valid trees this returns a full [`Snapshot`] even
@@ -203,7 +310,7 @@ pub fn solve_with_revision<T>(
 ) -> Result<Snapshot, SolveError> {
 	tree.validate().map_err(SolveError::Validation)?;
 	let node_capacity = tree.node_count();
-	let mut snapshot = Snapshot::new_unowned(revision, root, node_capacity);
+	let mut snapshot = Snapshot::new_unowned(revision, root, tree.geometry_fingerprint_validated(), node_capacity);
 	let Some(root_id) = tree.root_id() else {
 		return Ok(snapshot);
 	};

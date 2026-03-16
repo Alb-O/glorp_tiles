@@ -19,6 +19,10 @@ The library is intentionally split into two layers.
 Public modules are re-exported from `glorp_tiles` for ergonomic use.
 `NodeId` is a strongly typed handle that round-trips through serde as its numeric raw form.
 `Snapshot::node_rects()` iterates in stable ascending `NodeId` order, including split nodes.
+`Tree` and `Session` reject malformed persisted state during deserialization.
+Free solver snapshots are checked against the geometry-affecting tree state before low-level navigation.
+Deserialized snapshots stay ownerless: inspect them freely, pair them with `Snapshot::matches_tree()`,
+and re-solve before feeding session geometry commands.
 
 ## Example
 

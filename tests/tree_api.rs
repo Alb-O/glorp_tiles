@@ -140,12 +140,67 @@ fn best_neighbor_reports_checked_query_errors() {
 
 	let mut invalid = serde_json::to_value(&tree).expect("tree should serialize");
 	invalid["root"] = serde_json::json!(999);
-	let invalid_tree: Tree<String> = serde_json::from_value(invalid).expect("tree should deserialize");
+	let error = serde_json::from_value::<Tree<String>>(invalid).expect_err("tree deserialization should fail");
+	assert_eq!(error.to_string(), format!("MissingRoot({:?})", NodeId::from_raw(999)));
+}
+
+#[test]
+fn deserializing_invalid_session_state_fails() {
+	let mut session = Session::new();
+	let left = session.insert_root("left", LeafMeta::default()).expect("insert root");
+	let _right = session
+		.split_focus(Axis::X, Slot::B, "right", LeafMeta::default(), None)
+		.expect("split focus");
+
+	let mut invalid = serde_json::to_value(&session).expect("session should serialize");
+	invalid["selection"] = serde_json::json!(999);
+	let error = serde_json::from_value::<Session<String>>(invalid).expect_err("session deserialization should fail");
 	assert_eq!(
-		best_neighbor(&invalid_tree, &snapshot, left, Direction::Right),
-		Err(NeighborError::Validation(glorp_tiles::ValidationError::MissingRoot(
-			NodeId::from_raw(999)
-		)))
+		error.to_string(),
+		format!("InvalidSelection({:?})", NodeId::from_raw(999))
+	);
+	assert_eq!(left, NodeId::from_raw(1));
+}
+
+#[test]
+fn snapshots_match_same_geometry_state_and_reject_foreign_trees() {
+	let mut horizontal = Tree::new();
+	let left = horizontal
+		.insert_root("left", LeafMeta::default())
+		.expect("insert root");
+	let _right = horizontal
+		.split_leaf(left, Axis::X, Slot::B, "right", LeafMeta::default(), None)
+		.expect("split leaf");
+	let snap = solve(
+		&horizontal,
+		Rect {
+			x: 0,
+			y: 0,
+			w: 10,
+			h: 4,
+		},
+		&SolverPolicy::default(),
+	)
+	.expect("solve");
+
+	let mut same_geometry_different_payloads = Tree::new();
+	let left_clone = same_geometry_different_payloads
+		.insert_root("other-left", LeafMeta::default())
+		.expect("insert root");
+	let _right_clone = same_geometry_different_payloads
+		.split_leaf(left_clone, Axis::X, Slot::B, "other-right", LeafMeta::default(), None)
+		.expect("split leaf");
+	assert_eq!(snap.matches_tree(&same_geometry_different_payloads), Ok(true));
+
+	let mut vertical = Tree::new();
+	let top = vertical.insert_root("top", LeafMeta::default()).expect("insert root");
+	let _bottom = vertical
+		.split_leaf(top, Axis::Y, Slot::B, "bottom", LeafMeta::default(), None)
+		.expect("split leaf");
+	assert_eq!(snap.matches_tree(&vertical), Ok(false));
+	assert_eq!(
+		best_neighbor(&vertical, &snap, top, Direction::Down),
+		Err(NeighborError::SnapshotTreeMismatch)
 	);
 }
 

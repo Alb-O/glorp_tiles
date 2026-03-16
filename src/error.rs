@@ -83,6 +83,11 @@ impl std::error::Error for SolveError {}
 pub enum NeighborError {
 	/// The input tree failed structural validation before navigation began.
 	Validation(ValidationError),
+	/// The snapshot was solved from a different geometry-affecting tree state.
+	///
+	/// This covers structurally different trees as well as weight or leaf-metadata changes that
+	/// would alter solved geometry while reusing the same node ids.
+	SnapshotTreeMismatch,
 	/// The referenced current node id does not exist in the tree.
 	MissingNode(NodeId),
 	/// The current node exists but is not a leaf.

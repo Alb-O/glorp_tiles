@@ -66,7 +66,8 @@
 //!
 //! - [`ValidationError`] reports invalid tree or session structure
 //! - [`SolveError`] separates invalid input from strict infeasibility
-//! - [`NeighborError`] reports invalid low-level tree/snapshot navigation queries
+//! - [`NeighborError`] reports invalid low-level tree/snapshot navigation queries, including
+//!   mismatched free snapshots
 //! - [`NavError`] and [`OpError`] report stale or foreign snapshots and invalid session operations
 //!
 //! Determinism:
@@ -76,7 +77,17 @@
 //! - solving uses deterministic scoring and tie-breaking
 //! - [`Snapshot::node_rects()`] iterates in stable ascending [`NodeId`] order
 //! - navigation and resize operations consume a snapshot bound to one live session instance and revision
+//! - free solver snapshots are also bound to the geometry-affecting state of the solved [`Tree`]
 //! - [`NodeId`] is strongly typed and round-trips through serde as its numeric raw form
+//!
+//! Persistence:
+//!
+//! - deserializing [`Tree`] and [`Session`] validates structural and targeting invariants
+//! - malformed persisted state is rejected during deserialization instead of surfacing later as
+//!   panics or delayed operation errors
+//! - deserialized [`Snapshot`] values remain ownerless inspectable data; they can be checked
+//!   against a [`Tree`] with [`Snapshot::matches_tree()`] but cannot directly drive
+//!   session-relative geometry commands
 //!
 //! ```
 //! use glorp_tiles::{

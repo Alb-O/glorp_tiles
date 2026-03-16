@@ -29,7 +29,10 @@ use {
 		limits::{LeafMeta, WeightPair, canonicalize_weights, leaf_meta_is_valid},
 		preset::{PresetKind, apply_preset_subtree},
 	},
-	serde::{Deserialize, Serialize},
+	serde::{
+		Deserialize, Serialize,
+		de::{self, Deserializer},
+	},
 	std::{
 		collections::{HashMap, HashSet},
 		ops::ControlFlow,
@@ -192,11 +195,37 @@ impl<T> Node<T> {
 ///
 /// Node ids are allocated monotonically within a tree. Leaves keep their ids while they survive;
 /// split ids keep their ids until that split is removed or a subtree rebuild replaces it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Deserialization validates the entire structure before returning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Tree<T> {
 	root: Option<NodeId>,
 	nodes: HashMap<NodeId, Node<T>>,
 	next_id_raw: u64,
+}
+
+#[derive(Deserialize)]
+struct TreeWire<T> {
+	root: Option<NodeId>,
+	nodes: HashMap<NodeId, Node<T>>,
+	next_id_raw: u64,
+}
+
+impl<'de, T> Deserialize<'de> for Tree<T>
+where
+	T: Deserialize<'de>,
+{
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: Deserializer<'de>, {
+		let wire = TreeWire::<T>::deserialize(deserializer)?;
+		let tree = Self {
+			root: wire.root,
+			nodes: wire.nodes,
+			next_id_raw: wire.next_id_raw,
+		};
+		tree.validate().map_err(de::Error::custom)?;
+		Ok(tree)
+	}
 }
 
 impl<T> Default for Tree<T> {
@@ -262,6 +291,37 @@ impl<T> Tree<T> {
 			.collect::<Vec<_>>();
 		ids.sort_unstable();
 		ids
+	}
+
+	pub(crate) fn geometry_fingerprint_validated(&self) -> (u64, u64) {
+		let mut fingerprinter = Fingerprinter::new();
+		fingerprinter.write_tag(b"glorp_tiles.tree.geometry.v1");
+		fingerprinter.write_option_node_id(self.root);
+		for id in self.node_ids() {
+			fingerprinter.write_node_id(id);
+			match self
+				.nodes
+				.get(&id)
+				.expect("validated tree missing node during fingerprint")
+			{
+				Node::Leaf(leaf) => {
+					// Payload is intentionally excluded so editor-side content changes do not invalidate
+					// geometry caches or low-level navigation snapshots.
+					fingerprinter.write_u8(0);
+					fingerprinter.write_option_node_id(leaf.parent);
+					fingerprinter.write_leaf_meta(&leaf.meta);
+				}
+				Node::Split(split) => {
+					fingerprinter.write_u8(1);
+					fingerprinter.write_option_node_id(split.parent);
+					fingerprinter.write_axis(split.axis);
+					fingerprinter.write_node_id(split.a);
+					fingerprinter.write_node_id(split.b);
+					fingerprinter.write_weight_pair(split.weights);
+				}
+			}
+		}
+		fingerprinter.finish()
 	}
 
 	pub(crate) fn set_root(&mut self, root: Option<NodeId>) {
@@ -1024,6 +1084,99 @@ impl<T> Tree<T> {
 
 fn validate_leaf_meta(meta: &LeafMeta) -> Result<(), OpError> {
 	leaf_meta_is_valid(meta).then_some(()).ok_or(OpError::InvalidLeafMeta)
+}
+
+struct Fingerprinter(u128);
+
+impl Fingerprinter {
+	const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+	const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+	fn new() -> Self {
+		Self(Self::OFFSET)
+	}
+
+	fn finish(self) -> (u64, u64) {
+		(
+			u64::try_from(self.0 >> 64).expect("fingerprint high half should fit u64"),
+			u64::try_from(self.0 & u128::from(u64::MAX)).expect("fingerprint low half should fit u64"),
+		)
+	}
+
+	fn write_tag(&mut self, tag: &[u8]) {
+		self.write_u64(u64::try_from(tag.len()).expect("tag length should fit u64"));
+		for byte in tag {
+			self.write_u8(*byte);
+		}
+	}
+
+	fn write_u8(&mut self, value: u8) {
+		self.0 ^= u128::from(value);
+		self.0 = self.0.wrapping_mul(Self::PRIME);
+	}
+
+	fn write_u16(&mut self, value: u16) {
+		for byte in value.to_le_bytes() {
+			self.write_u8(byte);
+		}
+	}
+
+	fn write_u32(&mut self, value: u32) {
+		for byte in value.to_le_bytes() {
+			self.write_u8(byte);
+		}
+	}
+
+	fn write_u64(&mut self, value: u64) {
+		for byte in value.to_le_bytes() {
+			self.write_u8(byte);
+		}
+	}
+
+	fn write_node_id(&mut self, id: NodeId) {
+		self.write_u64(id.into_raw());
+	}
+
+	fn write_option_node_id(&mut self, id: Option<NodeId>) {
+		match id {
+			Some(id) => {
+				self.write_u8(1);
+				self.write_node_id(id);
+			}
+			None => self.write_u8(0),
+		}
+	}
+
+	fn write_axis(&mut self, axis: Axis) {
+		self.write_u8(match axis {
+			Axis::X => 0,
+			Axis::Y => 1,
+		});
+	}
+
+	fn write_option_u32(&mut self, value: Option<u32>) {
+		match value {
+			Some(value) => {
+				self.write_u8(1);
+				self.write_u32(value);
+			}
+			None => self.write_u8(0),
+		}
+	}
+
+	fn write_weight_pair(&mut self, weights: WeightPair) {
+		self.write_u32(weights.a);
+		self.write_u32(weights.b);
+	}
+
+	fn write_leaf_meta(&mut self, meta: &LeafMeta) {
+		self.write_u32(meta.limits.min_w);
+		self.write_u32(meta.limits.min_h);
+		self.write_option_u32(meta.limits.max_w);
+		self.write_option_u32(meta.limits.max_h);
+		self.write_u16(meta.priority.shrink);
+		self.write_u16(meta.priority.grow);
+	}
 }
 
 #[cfg(test)]
