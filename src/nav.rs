@@ -6,7 +6,7 @@
 
 use {
 	crate::{
-		geom::{Direction, Rect, orth_gap},
+		geom::{Axis, Direction, Rect, orth_gap},
 		ids::NodeId,
 		snapshot::Snapshot,
 		tree::Tree,
@@ -63,48 +63,42 @@ pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: D
 /// Returned scores are ordered lexicographically by [`NavScore`].
 #[must_use]
 pub fn nav_score(current: Rect, candidate: Rect, dir: Direction, rank: usize) -> Option<NavScore> {
-	let (eligible, primary_gap, orth_gap_value, orth_center_delta) = match dir {
-		Direction::Left => {
-			let eligible = candidate.right() <= current.left();
-			let primary_gap = u32::try_from(current.left() - candidate.right()).ok()?;
-			let orth_gap_value = orth_gap(current.top(), current.bottom(), candidate.top(), candidate.bottom());
-			let orth_center_delta = current
-				.center_twice_orth(crate::geom::Axis::X)
-				.abs_diff(candidate.center_twice_orth(crate::geom::Axis::X));
-			(eligible, primary_gap, orth_gap_value, orth_center_delta)
-		}
-		Direction::Right => {
-			let eligible = candidate.left() >= current.right();
-			let primary_gap = u32::try_from(candidate.left() - current.right()).ok()?;
-			let orth_gap_value = orth_gap(current.top(), current.bottom(), candidate.top(), candidate.bottom());
-			let orth_center_delta = current
-				.center_twice_orth(crate::geom::Axis::X)
-				.abs_diff(candidate.center_twice_orth(crate::geom::Axis::X));
-			(eligible, primary_gap, orth_gap_value, orth_center_delta)
-		}
-		Direction::Up => {
-			let eligible = candidate.bottom() <= current.top();
-			let primary_gap = u32::try_from(current.top() - candidate.bottom()).ok()?;
-			let orth_gap_value = orth_gap(current.left(), current.right(), candidate.left(), candidate.right());
-			let orth_center_delta = current
-				.center_twice_orth(crate::geom::Axis::Y)
-				.abs_diff(candidate.center_twice_orth(crate::geom::Axis::Y));
-			(eligible, primary_gap, orth_gap_value, orth_center_delta)
-		}
-		Direction::Down => {
-			let eligible = candidate.top() >= current.bottom();
-			let primary_gap = u32::try_from(candidate.top() - current.bottom()).ok()?;
-			let orth_gap_value = orth_gap(current.left(), current.right(), candidate.left(), candidate.right());
-			let orth_center_delta = current
-				.center_twice_orth(crate::geom::Axis::Y)
-				.abs_diff(candidate.center_twice_orth(crate::geom::Axis::Y));
-			(eligible, primary_gap, orth_gap_value, orth_center_delta)
-		}
+	let (eligible, primary_gap, axis, current_orth, candidate_orth) = match dir {
+		Direction::Left => (
+			candidate.right() <= current.left(),
+			u32::try_from(current.left() - candidate.right()).ok()?,
+			Axis::X,
+			(current.top(), current.bottom()),
+			(candidate.top(), candidate.bottom()),
+		),
+		Direction::Right => (
+			candidate.left() >= current.right(),
+			u32::try_from(candidate.left() - current.right()).ok()?,
+			Axis::X,
+			(current.top(), current.bottom()),
+			(candidate.top(), candidate.bottom()),
+		),
+		Direction::Up => (
+			candidate.bottom() <= current.top(),
+			u32::try_from(current.top() - candidate.bottom()).ok()?,
+			Axis::Y,
+			(current.left(), current.right()),
+			(candidate.left(), candidate.right()),
+		),
+		Direction::Down => (
+			candidate.top() >= current.bottom(),
+			u32::try_from(candidate.top() - current.bottom()).ok()?,
+			Axis::Y,
+			(current.left(), current.right()),
+			(candidate.left(), candidate.right()),
+		),
 	};
 	eligible.then_some(NavScore {
 		primary_gap,
-		orth_gap: orth_gap_value,
-		orth_center_delta,
+		orth_gap: orth_gap(current_orth.0, current_orth.1, candidate_orth.0, candidate_orth.1),
+		orth_center_delta: current
+			.center_twice_orth(axis)
+			.abs_diff(candidate.center_twice_orth(axis)),
 		tree_order_rank: rank,
 	})
 }

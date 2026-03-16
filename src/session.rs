@@ -104,16 +104,7 @@ impl<T> Session<T> {
 			return Err(ValidationError::NonLeafFocus(focus));
 		}
 		let selection = self.selection.ok_or(ValidationError::EmptyStateInconsistent)?;
-		if !self.tree.contains(selection) {
-			return Err(ValidationError::InvalidSelection(selection));
-		}
-		if self.tree.is_leaf(selection) {
-			if selection == focus {
-				Ok(())
-			} else {
-				Err(ValidationError::InvalidSelection(selection))
-			}
-		} else if self.tree.contains_in_subtree(selection, focus) {
+		if self.selection_contains_focus(selection, focus) {
 			Ok(())
 		} else {
 			Err(ValidationError::InvalidSelection(selection))
@@ -210,7 +201,7 @@ impl<T> Session<T> {
 			self.selection = Some(id);
 		} else {
 			let focus = self.require_focus_leaf()?;
-			if !self.tree.contains_in_subtree(id, focus) {
+			if !self.selection_contains_focus(id, focus) {
 				return Err(OpError::Validation(ValidationError::InvalidSelection(id)));
 			}
 			self.selection = Some(id);
@@ -532,14 +523,7 @@ impl<T> Session<T> {
 		self.selection = match (self.tree.root_id(), self.focus) {
 			(None, _) | (_, None) => None,
 			(Some(_), Some(focus)) => old_selection
-				.filter(|selection| self.tree.contains(*selection))
-				.filter(|selection| {
-					if self.tree.is_leaf(*selection) {
-						*selection == focus
-					} else {
-						self.tree.contains_in_subtree(*selection, focus)
-					}
-				})
+				.filter(|selection| self.selection_contains_focus(*selection, focus))
 				.or(Some(focus)),
 		};
 	}
@@ -551,10 +535,18 @@ impl<T> Session<T> {
 		};
 		self.selection = self
 			.selection
-			.filter(|selection| self.tree.contains(*selection))
+			.filter(|selection| self.selection_contains_focus(*selection, focus))
 			.filter(|selection| self.tree.is_split(*selection))
-			.filter(|selection| self.tree.contains_in_subtree(*selection, focus))
 			.or(Some(focus));
+	}
+
+	fn selection_contains_focus(&self, selection: NodeId, focus: NodeId) -> bool {
+		self.tree.contains(selection)
+			&& if self.tree.is_leaf(selection) {
+				selection == focus
+			} else {
+				self.tree.contains_in_subtree(selection, focus)
+			}
 	}
 
 	fn ensure_fresh_snapshot(&self, snap: &Snapshot) -> Result<(), OpError> {

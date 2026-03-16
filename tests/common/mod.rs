@@ -110,11 +110,7 @@ pub fn best_neighbor_oracle<T>(
 	session: &Session<T>, snap: &glorp_tiles::Snapshot, current: NodeId, dir: Direction,
 ) -> Option<NodeId> {
 	let current_rect = snap.rect(current)?;
-	let order = session
-		.tree()
-		.root_id()
-		.map(|root| session.tree().leaf_ids_dfs(root))
-		.unwrap_or_default();
+	let order = leaf_ids(session);
 
 	order
 		.iter()
@@ -385,25 +381,19 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 			}
 			3 if !splits.is_empty() => {
 				let split = splits[usize::from(*byte) % splits.len()];
-				if let Some(focus) = session.tree().first_leaf(split) {
-					let _ = session.set_focus_leaf(focus);
-					let _ = session.set_selection(split);
+				if prepare_selected_split(&mut session, split) {
 					let _ = session.toggle_axis();
 				}
 			}
 			4 if !splits.is_empty() => {
 				let split = splits[usize::from(*byte) % splits.len()];
-				if let Some(focus) = session.tree().first_leaf(split) {
-					let _ = session.set_focus_leaf(focus);
-					let _ = session.set_selection(split);
+				if prepare_selected_split(&mut session, split) {
 					let _ = session.mirror_selection(axis(byte));
 				}
 			}
 			5 if !splits.is_empty() => {
 				let split = splits[usize::from(*byte) % splits.len()];
-				if let Some(focus) = session.tree().first_leaf(split) {
-					let _ = session.set_focus_leaf(focus);
-					let _ = session.set_selection(split);
+				if prepare_selected_split(&mut session, split) {
 					let mode = if byte & 1 == 0 {
 						RebalanceMode::BinaryEqual
 					} else {
@@ -414,9 +404,7 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 			}
 			6 if !splits.is_empty() => {
 				let split = splits[usize::from(*byte) % splits.len()];
-				if let Some(focus) = session.tree().first_leaf(split) {
-					let _ = session.set_focus_leaf(focus);
-					let _ = session.set_selection(split);
+				if prepare_selected_split(&mut session, split) {
 					let preset = match byte & 0b11 {
 						0 => PresetKind::Balanced(BalancedPreset {
 							start_axis: axis(byte),
@@ -469,10 +457,7 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 					.filter(|target| *target != split)
 					.collect::<Vec<_>>();
 				if let Some(target) = targets.get(usize::from(*byte) % targets.len()) {
-					if let Some(focus) = session.tree().first_leaf(split) {
-						let _ = session.set_focus_leaf(focus);
-						let _ = session.set_selection(split);
-					}
+					let _ = prepare_selected_split(&mut session, split);
 					let _ = session.move_selection_as_sibling_of(*target, axis(byte), slot(byte));
 				}
 			}
@@ -492,6 +477,14 @@ fn first_disjoint_pair<T>(session: &Session<T>, nodes: &[NodeId]) -> Option<(Nod
 		}
 	}
 	None
+}
+
+fn prepare_selected_split<T>(session: &mut Session<T>, split: NodeId) -> bool {
+	session.tree().first_leaf(split).is_some_and(|focus| {
+		let _ = session.set_focus_leaf(focus);
+		let _ = session.set_selection(split);
+		true
+	})
 }
 
 fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize) -> Option<(u32, u32, u64, usize)> {

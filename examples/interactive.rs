@@ -159,6 +159,10 @@ fn repl_loop(demo: &mut Demo) -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
+fn rerender_on<T>(result: Result<T, String>) -> Result<CommandOutcome, String> {
+	result.map(|_| CommandOutcome::Continue { rerender: true })
+}
+
 fn print_tree(session: &Session<String>, id: glorp_tiles::NodeId, prefix: &str, branch: Option<char>, last: bool) {
 	let marker = match branch {
 		Some(slot) if last => format!("\\-{slot} "),
@@ -263,15 +267,13 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 		["focus", direction] => {
 			let direction = parse_direction(direction)?;
 			let snapshot = demo.snapshot()?;
-			demo.session
-				.focus_dir(direction, &snapshot)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.focus_dir(direction, &snapshot)
+					.map_err(|error| error.to_string()),
+			)
 		}
-		["select", "parent"] => {
-			demo.session.select_parent().map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
+		["select", "parent"] => rerender_on(demo.session.select_parent().map_err(|error| error.to_string())),
 		["select", "focus"] => {
 			demo.session.select_focus();
 			Ok(CommandOutcome::Continue { rerender: true })
@@ -280,103 +282,105 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 			let axis = parse_axis(axis)?;
 			let slot = parse_slot(slot)?;
 			let label = label_for_insert(demo, label.first().copied());
-			demo.session
-				.split_focus(axis, slot, label, LeafMeta::default(), None)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.split_focus(axis, slot, label, LeafMeta::default(), None)
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["wrap", axis, slot, label @ ..] if label.len() <= 1 => {
 			let axis = parse_axis(axis)?;
 			let slot = parse_slot(slot)?;
 			let label = label_for_insert(demo, label.first().copied());
-			demo.session
-				.wrap_selection(axis, slot, label, LeafMeta::default(), None)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.wrap_selection(axis, slot, label, LeafMeta::default(), None)
+					.map_err(|error| error.to_string()),
+			)
 		}
-		["remove"] => {
-			demo.session.remove_focus().map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
+		["remove"] => rerender_on(demo.session.remove_focus().map_err(|error| error.to_string())),
 		["grow", direction, amount, strategy] => {
 			let direction = parse_direction(direction)?;
 			let amount = parse_u32(amount, "amount")?;
 			let strategy = parse_resize_strategy(strategy)?;
 			let snapshot = demo.snapshot()?;
-			demo.session
-				.grow_focus(direction, amount, strategy, &snapshot)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.grow_focus(direction, amount, strategy, &snapshot)
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["shrink", direction, amount, strategy] => {
 			let direction = parse_direction(direction)?;
 			let amount = parse_u32(amount, "amount")?;
 			let strategy = parse_resize_strategy(strategy)?;
 			let snapshot = demo.snapshot()?;
-			demo.session
-				.shrink_focus(direction, amount, strategy, &snapshot)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.shrink_focus(direction, amount, strategy, &snapshot)
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["rebalance", mode] => {
 			let mode = parse_rebalance_mode(mode)?;
-			demo.session
-				.rebalance_selection(mode)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.rebalance_selection(mode)
+					.map_err(|error| error.to_string()),
+			)
 		}
-		["toggle-axis"] => {
-			demo.session.toggle_axis().map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
+		["toggle-axis"] => rerender_on(demo.session.toggle_axis().map_err(|error| error.to_string())),
 		["mirror", axis] => {
 			let axis = parse_axis(axis)?;
-			demo.session.mirror_selection(axis).map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(demo.session.mirror_selection(axis).map_err(|error| error.to_string()))
 		}
 		["preset", "balanced", axis, alternation] => {
 			let axis = parse_axis(axis)?;
 			let alternate = parse_alternation(alternation)?;
-			demo.session
-				.apply_preset(PresetKind::Balanced(BalancedPreset {
-					start_axis: axis,
-					alternate,
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.apply_preset(PresetKind::Balanced(BalancedPreset {
+						start_axis: axis,
+						alternate,
+					}))
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["preset", "dwindle", axis, slot] => {
 			let axis = parse_axis(axis)?;
 			let slot = parse_slot(slot)?;
-			demo.session
-				.apply_preset(PresetKind::Dwindle(DwindlePreset {
-					start_axis: axis,
-					new_leaf_slot: slot,
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.apply_preset(PresetKind::Dwindle(DwindlePreset {
+						start_axis: axis,
+						new_leaf_slot: slot,
+					}))
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["preset", "tall", slot, weights @ ..] if weights.len() <= 2 => {
 			let slot = parse_slot(slot)?;
 			let weights = parse_optional_weight_pair(weights)?;
-			demo.session
-				.apply_preset(PresetKind::Tall(TallPreset {
-					master_slot: slot,
-					root_weights: weights,
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.apply_preset(PresetKind::Tall(TallPreset {
+						master_slot: slot,
+						root_weights: weights,
+					}))
+					.map_err(|error| error.to_string()),
+			)
 		}
 		["preset", "wide", slot, weights @ ..] if weights.len() <= 2 => {
 			let slot = parse_slot(slot)?;
 			let weights = parse_optional_weight_pair(weights)?;
-			demo.session
-				.apply_preset(PresetKind::Wide(WidePreset {
-					master_slot: slot,
-					root_weights: weights,
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
+			rerender_on(
+				demo.session
+					.apply_preset(PresetKind::Wide(WidePreset {
+						master_slot: slot,
+						root_weights: weights,
+					}))
+					.map_err(|error| error.to_string()),
+			)
 		}
 		_ => Err(format!("unknown command: {input}")),
 	}

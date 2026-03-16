@@ -606,36 +606,37 @@ impl<T> Tree<T> {
 	}
 
 	pub(crate) fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Option<()> {
-		if self.leaf(id).is_some() {
-			return Some(());
+		match self.children_of(id) {
+			Some((a, b)) => {
+				self.rebalance_subtree_binary_equal(a)?;
+				self.rebalance_subtree_binary_equal(b)?;
+				self.set_split_weights(id, WeightPair::default())
+			}
+			None => Some(()),
 		}
-		let (a, b) = self.children_of(id)?;
-		self.rebalance_subtree_binary_equal(a)?;
-		self.rebalance_subtree_binary_equal(b)?;
-		self.set_split_weights(id, WeightPair::default())
 	}
 
 	pub(crate) fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Option<u32> {
-		if self.leaf(id).is_some() {
-			return Some(1);
+		match self.children_of(id) {
+			Some((a, b)) => {
+				let count_a = self.rebalance_subtree_leaf_count(a)?;
+				let count_b = self.rebalance_subtree_leaf_count(b)?;
+				self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
+				Some(count_a + count_b)
+			}
+			None => Some(1),
 		}
-		let (a, b) = self.children_of(id)?;
-		let count_a = self.rebalance_subtree_leaf_count(a)?;
-		let count_b = self.rebalance_subtree_leaf_count(b)?;
-		self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
-		Some(count_a + count_b)
 	}
 
 	pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) {
-		let Some(children) = self.children_of(id) else {
-			return;
-		};
-		self.mirror_subtree_axis(children.0, axis);
-		self.mirror_subtree_axis(children.1, axis);
-		let split = self.split_mut(id).expect("split missing during mirror");
-		if split.axis() == axis {
-			split.swap_children();
-			split.swap_weights();
+		if let Some((a, b)) = self.children_of(id) {
+			self.mirror_subtree_axis(a, axis);
+			self.mirror_subtree_axis(b, axis);
+			let split = self.split_mut(id).expect("split missing during mirror");
+			if split.axis() == axis {
+				split.swap_children();
+				split.swap_weights();
+			}
 		}
 	}
 

@@ -134,8 +134,8 @@ pub enum PresetKind {
 pub(crate) fn validate_preset(preset: PresetKind) -> Result<(), OpError> {
 	match preset {
 		PresetKind::Balanced(_) | PresetKind::Dwindle(_) => Ok(()),
-		PresetKind::Tall(preset) => preset.root_weights.checked().map(|_| ()).ok_or(OpError::InvalidWeights),
-		PresetKind::Wide(preset) => preset.root_weights.checked().map(|_| ()).ok_or(OpError::InvalidWeights),
+		PresetKind::Tall(preset) => validate_root_weights(preset.root_weights),
+		PresetKind::Wide(preset) => validate_root_weights(preset.root_weights),
 	}
 }
 
@@ -255,28 +255,17 @@ fn build_dwindle<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis, slot: Slo
 }
 
 fn build_tall<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: TallPreset) -> Result<NodeId, OpError> {
-	if leaves.is_empty() {
-		return Err(OpError::Empty);
-	}
-	if leaves.len() == 1 {
-		return Ok(leaves[0]);
-	}
-	let master = leaves[0];
-	let stack = build_equal_linear(tree, &leaves[1..], Axis::Y)?;
-	let (a, b) = match preset.master_slot {
-		Slot::A => (master, stack),
-		Slot::B => (stack, master),
-	};
-	Ok(new_internal_split(
-		tree,
-		Axis::X,
-		a,
-		b,
-		preset.root_weights.checked().ok_or(OpError::InvalidWeights)?,
-	))
+	build_master_stack(tree, leaves, Axis::X, Axis::Y, preset.master_slot, preset.root_weights)
 }
 
 fn build_wide<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: WidePreset) -> Result<NodeId, OpError> {
+	build_master_stack(tree, leaves, Axis::Y, Axis::X, preset.master_slot, preset.root_weights)
+}
+
+fn build_master_stack<T>(
+	tree: &mut Tree<T>, leaves: &[NodeId], root_axis: Axis, stack_axis: Axis, master_slot: Slot,
+	root_weights: WeightPair,
+) -> Result<NodeId, OpError> {
 	if leaves.is_empty() {
 		return Err(OpError::Empty);
 	}
@@ -284,17 +273,17 @@ fn build_wide<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: WidePreset) -> R
 		return Ok(leaves[0]);
 	}
 	let master = leaves[0];
-	let stack = build_equal_linear(tree, &leaves[1..], Axis::X)?;
-	let (a, b) = match preset.master_slot {
+	let stack = build_equal_linear(tree, &leaves[1..], stack_axis)?;
+	let (a, b) = match master_slot {
 		Slot::A => (master, stack),
 		Slot::B => (stack, master),
 	};
 	Ok(new_internal_split(
 		tree,
-		Axis::Y,
+		root_axis,
 		a,
 		b,
-		preset.root_weights.checked().ok_or(OpError::InvalidWeights)?,
+		root_weights.checked().ok_or(OpError::InvalidWeights)?,
 	))
 }
 
@@ -372,33 +361,33 @@ fn matches_dwindle<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], axis: Axis,
 }
 
 fn matches_tall<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: TallPreset) -> bool {
-	if leaves.is_empty() {
-		return false;
-	}
-	if leaves.len() == 1 {
-		return tree.is_leaf(id) && id == leaves[0];
-	}
-	let Some(split) = tree.split(id) else {
-		return false;
-	};
-	if split.axis() != Axis::X || split.weights() != preset.root_weights {
-		return false;
-	}
-	match preset.master_slot {
-		Slot::A => {
-			split.a() == leaves[0]
-				&& tree.is_leaf(split.a())
-				&& matches_equal_linear(tree, split.b(), &leaves[1..], Axis::Y)
-		}
-		Slot::B => {
-			split.b() == leaves[0]
-				&& tree.is_leaf(split.b())
-				&& matches_equal_linear(tree, split.a(), &leaves[1..], Axis::Y)
-		}
-	}
+	matches_master_stack(
+		tree,
+		id,
+		leaves,
+		Axis::X,
+		Axis::Y,
+		preset.master_slot,
+		preset.root_weights,
+	)
 }
 
 fn matches_wide<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: WidePreset) -> bool {
+	matches_master_stack(
+		tree,
+		id,
+		leaves,
+		Axis::Y,
+		Axis::X,
+		preset.master_slot,
+		preset.root_weights,
+	)
+}
+
+fn matches_master_stack<T>(
+	tree: &Tree<T>, id: NodeId, leaves: &[NodeId], root_axis: Axis, stack_axis: Axis, master_slot: Slot,
+	root_weights: WeightPair,
+) -> bool {
 	if leaves.is_empty() {
 		return false;
 	}
@@ -408,19 +397,19 @@ fn matches_wide<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: WidePr
 	let Some(split) = tree.split(id) else {
 		return false;
 	};
-	if split.axis() != Axis::Y || split.weights() != preset.root_weights {
+	if split.axis() != root_axis || split.weights() != root_weights {
 		return false;
 	}
-	match preset.master_slot {
+	match master_slot {
 		Slot::A => {
 			split.a() == leaves[0]
 				&& tree.is_leaf(split.a())
-				&& matches_equal_linear(tree, split.b(), &leaves[1..], Axis::X)
+				&& matches_equal_linear(tree, split.b(), &leaves[1..], stack_axis)
 		}
 		Slot::B => {
 			split.b() == leaves[0]
 				&& tree.is_leaf(split.b())
-				&& matches_equal_linear(tree, split.a(), &leaves[1..], Axis::X)
+				&& matches_equal_linear(tree, split.a(), &leaves[1..], stack_axis)
 		}
 	}
 }
@@ -447,6 +436,10 @@ fn leaf_count_weights(a: usize, b: usize) -> WeightPair {
 		u32::try_from(a).expect("preset leaf count exceeds u32"),
 		u32::try_from(b).expect("preset leaf count exceeds u32"),
 	)
+}
+
+fn validate_root_weights(weights: WeightPair) -> Result<(), OpError> {
+	weights.checked().map(|_| ()).ok_or(OpError::InvalidWeights)
 }
 
 fn new_internal_split<T>(tree: &mut Tree<T>, axis: Axis, a: NodeId, b: NodeId, weights: WeightPair) -> NodeId {
