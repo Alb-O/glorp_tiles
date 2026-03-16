@@ -76,7 +76,7 @@ fn distributed_allocations(eligible: &[common::RefEligibleSplit], request: u32, 
 			let base = u32::try_from(product / u128::from(total_slack)).expect("base share should fit u32");
 			let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder should fit u32");
 			assigned += base;
-			(idx, slack, base.min(slack), remainder)
+			(idx, slack, base, remainder)
 		})
 		.collect::<Vec<_>>();
 	let mut leftover = request - assigned;

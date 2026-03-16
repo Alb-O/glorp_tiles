@@ -212,8 +212,8 @@ fn fmt_id(id: Option<glorp_tiles::NodeId>) -> String {
 
 fn fmt_selection(session: &Session<String>) -> String {
 	match session.selection() {
-		Some(id) if session.tree().is_leaf(id) => format!("{id}(leaf)"),
-		Some(id) if session.tree().is_split(id) => format!("{id}(split)"),
+		Some(id) if session.tree().leaf(id).is_some() => format!("{id}(leaf)"),
+		Some(id) if session.tree().split(id).is_some() => format!("{id}(split)"),
 		Some(id) => format!("{id}(?)"),
 		None => "-".to_owned(),
 	}

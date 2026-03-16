@@ -77,7 +77,7 @@ pub(crate) fn resize_sign(dir: Direction, outward: bool) -> i8 {
 ///
 /// The returned vector is in nearest-first eligible order.
 ///
-/// - [`ResizeStrategy::Local`] may return a zero-delta entry if the nearest split has zero slack.
+/// - [`ResizeStrategy::Local`] returns at most one non-zero allocation for the nearest split.
 /// - [`ResizeStrategy::AncestorChain`] consumes slack greedily from nearest to farthest.
 /// - [`ResizeStrategy::DistributedBySlack`] floors proportional shares, assigns leftover units by
 ///   largest remainder with earlier eligible splits winning ties, then restores original eligible
@@ -88,7 +88,10 @@ pub(crate) fn distribute_resize(
 	match strategy {
 		ResizeStrategy::Local => eligible
 			.first()
-			.map(|entry| vec![(0, amount.min(entry.slack(sign)))])
+			.and_then(|entry| {
+				let delta = amount.min(entry.slack(sign));
+				(delta != 0).then_some(vec![(0, delta)])
+			})
 			.unwrap_or_default(),
 		ResizeStrategy::AncestorChain => {
 			let mut remaining = amount;
@@ -120,8 +123,10 @@ pub(crate) fn distribute_resize(
 					let product = u128::from(request) * u128::from(slack);
 					let base = u32::try_from(product / u128::from(total_slack)).expect("base resize share exceeds u32");
 					let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder exceeds u32");
+					// `request <= total_slack`, so the floored base share can never exceed this split's
+					// own slack; any leftover units are handled by the remainder pass below.
 					assigned += base;
-					(idx, slack, base.min(slack), remainder)
+					(idx, slack, base, remainder)
 				})
 				.collect::<Vec<_>>();
 			let mut leftover = request - assigned;

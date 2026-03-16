@@ -272,6 +272,22 @@ impl<T> Tree<T> {
 		self.nodes.get_mut(&id).and_then(Node::as_split_mut)
 	}
 
+	fn split_mut_or_error(&mut self, id: NodeId) -> Result<&mut SplitNode, OpError> {
+		match self.nodes.get_mut(&id) {
+			Some(Node::Split(split)) => Ok(split),
+			Some(Node::Leaf(_)) => Err(OpError::NotSplit(id)),
+			None => Err(OpError::MissingNode(id)),
+		}
+	}
+
+	fn leaf_mut_or_error(&mut self, id: NodeId) -> Result<&mut LeafNode<T>, OpError> {
+		match self.nodes.get_mut(&id) {
+			Some(Node::Leaf(leaf)) => Ok(leaf),
+			Some(Node::Split(_)) => Err(OpError::NotLeaf(id)),
+			None => Err(OpError::MissingNode(id)),
+		}
+	}
+
 	pub(crate) fn remove_node(&mut self, id: NodeId) -> Option<Node<T>> {
 		self.nodes.remove(&id)
 	}
@@ -399,11 +415,10 @@ impl<T> Tree<T> {
 	pub fn split_leaf(
 		&mut self, leaf: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
-		if !self.contains(leaf) {
-			return Err(OpError::MissingNode(leaf));
-		}
-		if !self.is_leaf(leaf) {
-			return Err(OpError::NotLeaf(leaf));
+		match self.nodes.get(&leaf) {
+			Some(Node::Leaf(_)) => {}
+			Some(Node::Split(_)) => return Err(OpError::NotLeaf(leaf)),
+			None => return Err(OpError::MissingNode(leaf)),
 		}
 		validate_leaf_meta(&meta)?;
 		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
@@ -420,7 +435,7 @@ impl<T> Tree<T> {
 	pub fn wrap_node(
 		&mut self, target: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
-		if !self.contains(target) {
+		if !self.nodes.contains_key(&target) {
 			return Err(OpError::MissingNode(target));
 		}
 		validate_leaf_meta(&meta)?;
@@ -436,11 +451,10 @@ impl<T> Tree<T> {
 	/// Returns the surviving replacement site, or `None` when the tree becomes empty. Removing the
 	/// only root leaf empties the tree.
 	pub fn remove_leaf(&mut self, leaf: NodeId) -> Result<Option<NodeId>, OpError> {
-		if !self.contains(leaf) {
-			return Err(OpError::MissingNode(leaf));
-		}
-		if !self.is_leaf(leaf) {
-			return Err(OpError::NotLeaf(leaf));
+		match self.nodes.get(&leaf) {
+			Some(Node::Leaf(_)) => {}
+			Some(Node::Split(_)) => return Err(OpError::NotLeaf(leaf)),
+			None => return Err(OpError::MissingNode(leaf)),
 		}
 		// The internal helper only fails for missing/non-leaf ids, which we've ruled out above.
 		let removed = self
@@ -492,14 +506,8 @@ impl<T> Tree<T> {
 	///
 	/// Payload changes do not affect validation or solved geometry.
 	pub fn set_leaf_payload(&mut self, leaf: NodeId, payload: T) -> Result<(), OpError> {
-		match self.nodes.get_mut(&leaf) {
-			Some(Node::Leaf(node)) => {
-				node.payload = payload;
-				Ok(())
-			}
-			Some(Node::Split(_)) => Err(OpError::NotLeaf(leaf)),
-			None => Err(OpError::MissingNode(leaf)),
-		}
+		self.leaf_mut_or_error(leaf)?.payload = payload;
+		Ok(())
 	}
 
 	/// Replaces the sizing metadata stored in `leaf`.
@@ -508,17 +516,17 @@ impl<T> Tree<T> {
 	/// leaves the tree unchanged.
 	pub fn set_leaf_meta(&mut self, leaf: NodeId, meta: LeafMeta) -> Result<bool, OpError> {
 		validate_leaf_meta(&meta)?;
-		let Some(node) = self.nodes.get_mut(&leaf) else {
-			return Err(OpError::MissingNode(leaf));
-		};
-		let Node::Leaf(node) = node else {
-			return Err(OpError::NotLeaf(leaf));
-		};
-		let changed = node.meta != meta;
-		if changed {
+		let changed = {
+			// Keep the mutable leaf borrow inside this block so the whole tree can be revalidated
+			// immediately afterward without splitting the update into a separate helper.
+			let node = self.leaf_mut_or_error(leaf)?;
+			if node.meta == meta {
+				return Ok(false);
+			}
 			node.meta = meta;
-			self.validate().map_err(OpError::Validation)?;
-		}
+			true
+		};
+		self.validate().map_err(OpError::Validation)?;
 		Ok(changed)
 	}
 
@@ -759,12 +767,6 @@ impl<T> Tree<T> {
 		std::mem::swap(&mut split.a, &mut split.b);
 	}
 
-	fn toggle_split_axis_inner(&mut self, id: NodeId) -> Option<()> {
-		let split = self.split_mut(id)?;
-		split.set_axis(split.axis().toggled());
-		Some(())
-	}
-
 	fn set_split_weights_inner(&mut self, id: NodeId, weights: WeightPair) -> Option<bool> {
 		let split = self.split_mut(id)?;
 		let changed = split.weights() != weights;
@@ -778,13 +780,8 @@ impl<T> Tree<T> {
 	///
 	/// This preserves child ids and weights while flipping `X <-> Y`.
 	pub fn toggle_split_axis(&mut self, split: NodeId) -> Result<(), OpError> {
-		self.toggle_split_axis_inner(split).ok_or_else(|| {
-			if self.contains(split) {
-				OpError::NotSplit(split)
-			} else {
-				OpError::MissingNode(split)
-			}
-		})?;
+		let split = self.split_mut_or_error(split)?;
+		split.set_axis(split.axis().toggled());
 		self.validate().map_err(OpError::Validation)
 	}
 
@@ -793,13 +790,14 @@ impl<T> Tree<T> {
 	/// Returns `true` when the weights changed. Invalid all-zero weights are rejected.
 	pub fn set_split_weights(&mut self, split: NodeId, weights: WeightPair) -> Result<bool, OpError> {
 		let weights = weights.checked().ok_or(OpError::InvalidWeights)?;
-		let changed = self.set_split_weights_inner(split, weights).ok_or_else(|| {
-			if self.contains(split) {
-				OpError::NotSplit(split)
-			} else {
-				OpError::MissingNode(split)
+		let changed = {
+			let split = self.split_mut_or_error(split)?;
+			if split.weights() == weights {
+				return Ok(false);
 			}
-		})?;
+			split.set_weights(weights);
+			true
+		};
 		if changed {
 			self.validate().map_err(OpError::Validation)?;
 		}

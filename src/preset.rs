@@ -212,27 +212,16 @@ fn build_balanced<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: BalancedPres
 		return Ok(leaves[0]);
 	}
 	let mid = leaves.len().div_ceil(2);
-	let next_axis = if preset.alternate {
-		preset.start_axis.toggled()
-	} else {
-		preset.start_axis
+	let next_preset = BalancedPreset {
+		start_axis: if preset.alternate {
+			preset.start_axis.toggled()
+		} else {
+			preset.start_axis
+		},
+		alternate: preset.alternate,
 	};
-	let a = build_balanced(
-		tree,
-		&leaves[..mid],
-		BalancedPreset {
-			start_axis: next_axis,
-			alternate: preset.alternate,
-		},
-	)?;
-	let b = build_balanced(
-		tree,
-		&leaves[mid..],
-		BalancedPreset {
-			start_axis: next_axis,
-			alternate: preset.alternate,
-		},
-	)?;
+	let a = build_balanced(tree, &leaves[..mid], next_preset)?;
+	let b = build_balanced(tree, &leaves[mid..], next_preset)?;
 	Ok(new_internal_split(
 		tree,
 		preset.start_axis,
@@ -243,12 +232,14 @@ fn build_balanced<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: BalancedPres
 }
 
 fn build_dwindle<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis, slot: Slot) -> Result<NodeId, OpError> {
-	if leaves.is_empty() {
+	let Some((&last, rest)) = leaves.split_last() else {
 		return Err(OpError::Empty);
-	}
-	let mut subtree = *leaves.last().expect("empty leaves handled above");
+	};
+	// Build from the tail inward so each step wraps the subtree that would appear "after" the next
+	// leaf in stable DFS order.
+	let mut subtree = last;
 	let toggled_axis = axis.toggled();
-	for (idx, leaf) in leaves[..leaves.len() - 1].iter().copied().enumerate().rev() {
+	for (idx, leaf) in rest.iter().copied().enumerate().rev() {
 		let split_axis = if idx % 2 == 0 { axis } else { toggled_axis };
 		let (a, b) = match slot {
 			Slot::A => (subtree, leaf),
@@ -293,12 +284,14 @@ fn build_master_stack<T>(
 }
 
 fn build_equal_linear<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis) -> Result<NodeId, OpError> {
-	if leaves.is_empty() {
+	let Some((&last, rest)) = leaves.split_last() else {
 		return Err(OpError::Empty);
-	}
-	let mut subtree = *leaves.last().expect("empty leaves handled above");
-	for (idx, leaf) in leaves[..leaves.len() - 1].iter().copied().enumerate().rev() {
-		let remaining = leaves.len() - idx - 1;
+	};
+	let mut subtree = last;
+	for (idx, leaf) in rest.iter().copied().enumerate().rev() {
+		// `remaining` counts the leaves already packed into `subtree`, so the next split can use
+		// leaf-count weights without a second traversal.
+		let remaining = rest.len() - idx;
 		subtree = new_internal_split(tree, axis, leaf, subtree, leaf_count_weights(1, remaining));
 	}
 	Ok(subtree)
