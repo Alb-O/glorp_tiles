@@ -127,6 +127,21 @@ pub(crate) enum Node<T> {
 	Split(SplitNode),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoveLeafResult {
+	Emptied,
+	Replaced(NodeId),
+}
+
+impl RemoveLeafResult {
+	pub(crate) fn replacement_site(self) -> Option<NodeId> {
+		match self {
+			Self::Emptied => None,
+			Self::Replaced(node) => Some(node),
+		}
+	}
+}
+
 impl<T> Node<T> {
 	#[must_use]
 	fn parent(&self) -> Option<NodeId> {
@@ -612,9 +627,8 @@ impl<T> Tree<T> {
 	}
 
 	pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) {
-		let children = match self.children_of(id) {
-			Some(children) => children,
-			None => return,
+		let Some(children) = self.children_of(id) else {
+			return;
 		};
 		self.mirror_subtree_axis(children.0, axis);
 		self.mirror_subtree_axis(children.1, axis);
@@ -625,33 +639,40 @@ impl<T> Tree<T> {
 		}
 	}
 
+	fn reattach_child(&mut self, parent: Option<NodeId>, replaced: Option<NodeId>, child: NodeId) {
+		if let Some(parent) = parent {
+			self.replace_child(
+				parent,
+				replaced.expect("replacement target missing for non-root reattach"),
+				child,
+			);
+		} else {
+			self.root = Some(child);
+			self.set_parent(child, None);
+		}
+	}
+
 	fn collapse_unary_parent(&mut self, removed_child: NodeId) -> Option<NodeId> {
 		let parent = self.parent_of(removed_child)?;
 		let sibling = self.sibling_of(removed_child)?;
-		let grand = self.parent_of(parent);
-		if let Some(grand) = grand {
-			self.replace_child(grand, parent, sibling);
-		} else {
-			self.root = Some(sibling);
-			self.set_parent(sibling, None);
-		}
+		self.reattach_child(self.parent_of(parent), Some(parent), sibling);
 		self.nodes.remove(&parent);
 		Some(sibling)
 	}
 
-	pub(crate) fn remove_leaf_and_collapse(&mut self, leaf: NodeId) -> Option<Option<NodeId>> {
+	pub(crate) fn remove_leaf_and_collapse(&mut self, leaf: NodeId) -> Option<RemoveLeafResult> {
 		if !self.is_leaf(leaf) {
 			return None;
 		}
 		if self.root_id() == Some(leaf) {
 			self.set_root(None);
 			self.remove_node(leaf)?;
-			return Some(None);
+			return Some(RemoveLeafResult::Emptied);
 		}
 		let sibling = self.sibling_of(leaf)?;
 		let replacement = self.collapse_unary_parent(leaf).unwrap_or(sibling);
 		self.remove_node(leaf)?;
-		Some(Some(replacement))
+		Some(RemoveLeafResult::Replaced(replacement))
 	}
 
 	pub(crate) fn swap_disjoint_nodes(&mut self, a: NodeId, b: NodeId) -> Option<()> {
@@ -662,20 +683,8 @@ impl<T> Tree<T> {
 			self.swap_parent_slots(parent);
 			return Some(());
 		}
-		match parent_a {
-			Some(parent) => self.replace_child(parent, a, b),
-			None => {
-				self.set_root(Some(b));
-				self.set_parent(b, None);
-			}
-		}
-		match parent_b {
-			Some(parent) => self.replace_child(parent, b, a),
-			None => {
-				self.set_root(Some(a));
-				self.set_parent(a, None);
-			}
-		}
+		self.reattach_child(parent_a, Some(a), b);
+		self.reattach_child(parent_b, Some(b), a);
 		Some(())
 	}
 
@@ -687,13 +696,7 @@ impl<T> Tree<T> {
 		}
 		let parent = self.parent_of(id).expect("detached subtree missing parent");
 		let sibling = self.sibling_of(id).expect("detached subtree missing sibling");
-		let grand = self.parent_of(parent);
-		if let Some(grand) = grand {
-			self.replace_child(grand, parent, sibling);
-		} else {
-			self.root = Some(sibling);
-			self.set_parent(sibling, None);
-		}
+		self.reattach_child(self.parent_of(parent), Some(parent), sibling);
 		self.nodes.remove(&parent);
 		self.set_parent(id, None);
 	}
@@ -709,15 +712,7 @@ impl<T> Tree<T> {
 		let split_id = self.new_split(axis, a, b, weights);
 		self.set_parent(a, Some(split_id));
 		self.set_parent(b, Some(split_id));
-		match parent_of_target {
-			Some(parent) => {
-				self.replace_child(parent, target, split_id);
-			}
-			None => {
-				self.root = Some(split_id);
-				self.set_parent(split_id, None);
-			}
-		}
+		self.reattach_child(parent_of_target, Some(target), split_id);
 		split_id
 	}
 

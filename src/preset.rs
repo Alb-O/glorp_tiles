@@ -150,24 +150,12 @@ pub(crate) fn build_preset_subtree<T>(
 	}
 }
 
-/// Returns whether `root` already matches `preset`.
-///
-/// Matching is checked against the subtree's current leaf order in stable depth-first
-/// `A`-before-`B` order.
-pub(crate) fn subtree_matches_preset<T>(tree: &Tree<T>, root: NodeId, preset: PresetKind) -> Result<bool, OpError> {
-	validate_preset(preset)?;
-	let leaves = tree.leaf_ids_dfs(root);
+fn subtree_matches_preset_with_leaves<T>(tree: &Tree<T>, root: NodeId, leaves: &[NodeId], preset: PresetKind) -> bool {
 	match preset {
-		PresetKind::Balanced(preset) => Ok(matches_balanced(tree, root, &leaves, preset)),
-		PresetKind::Dwindle(preset) => Ok(matches_dwindle(
-			tree,
-			root,
-			&leaves,
-			preset.start_axis,
-			preset.new_leaf_slot,
-		)),
-		PresetKind::Tall(preset) => Ok(matches_tall(tree, root, &leaves, preset)),
-		PresetKind::Wide(preset) => Ok(matches_wide(tree, root, &leaves, preset)),
+		PresetKind::Balanced(preset) => matches_balanced(tree, root, leaves, preset),
+		PresetKind::Dwindle(preset) => matches_dwindle(tree, root, leaves, preset.start_axis, preset.new_leaf_slot),
+		PresetKind::Tall(preset) => matches_tall(tree, root, leaves, preset),
+		PresetKind::Wide(preset) => matches_wide(tree, root, leaves, preset),
 	}
 }
 
@@ -182,12 +170,12 @@ pub(crate) fn apply_preset_subtree<T>(
 	if tree.is_leaf(selection) {
 		return Ok(None);
 	}
-	if subtree_matches_preset(tree, selection, preset)? {
+	let leaves = tree.leaf_ids_dfs(selection);
+	if subtree_matches_preset_with_leaves(tree, selection, &leaves, preset) {
 		return Ok(None);
 	}
 
 	let parent = tree.parent_of(selection);
-	let leaves = tree.leaf_ids_dfs(selection);
 	let split_ids = tree.split_ids_postorder(selection);
 
 	for leaf in &leaves {
@@ -198,14 +186,11 @@ pub(crate) fn apply_preset_subtree<T>(
 	}
 
 	let rebuilt = build_preset_subtree_validated(tree, &leaves, preset);
-	match parent {
-		Some(parent) => {
-			tree.replace_child(parent, selection, rebuilt);
-		}
-		None => {
-			tree.set_root(Some(rebuilt));
-			tree.set_parent(rebuilt, None);
-		}
+	if let Some(parent) = parent {
+		tree.replace_child(parent, selection, rebuilt);
+	} else {
+		tree.set_root(Some(rebuilt));
+		tree.set_parent(rebuilt, None);
 	}
 
 	Ok(Some(rebuilt))
@@ -249,7 +234,7 @@ fn build_balanced<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: BalancedPres
 		preset.start_axis,
 		a,
 		b,
-		canonicalize_weights(mid as u32, (leaves.len() - mid) as u32),
+		leaf_count_weights(mid, leaves.len() - mid),
 	))
 }
 
@@ -327,7 +312,7 @@ fn build_equal_linear<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis) -> R
 		axis,
 		head,
 		rest,
-		canonicalize_weights(1, (leaves.len() - 1) as u32),
+		leaf_count_weights(1, leaves.len() - 1),
 	))
 }
 
@@ -345,7 +330,7 @@ fn matches_balanced<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: Ba
 		return false;
 	}
 	let mid = leaves.len().div_ceil(2);
-	if split.weights() != canonicalize_weights(mid as u32, (leaves.len() - mid) as u32) {
+	if split.weights() != leaf_count_weights(mid, leaves.len() - mid) {
 		return false;
 	}
 	let next = BalancedPreset {
@@ -451,10 +436,17 @@ fn matches_equal_linear<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], axis: 
 		return false;
 	};
 	split.axis() == axis
-		&& split.weights() == canonicalize_weights(1, (leaves.len() - 1) as u32)
+		&& split.weights() == leaf_count_weights(1, leaves.len() - 1)
 		&& split.a() == leaves[0]
 		&& tree.is_leaf(split.a())
 		&& matches_equal_linear(tree, split.b(), &leaves[1..], axis)
+}
+
+fn leaf_count_weights(a: usize, b: usize) -> WeightPair {
+	canonicalize_weights(
+		u32::try_from(a).expect("preset leaf count exceeds u32"),
+		u32::try_from(b).expect("preset leaf count exceeds u32"),
+	)
 }
 
 fn new_internal_split<T>(tree: &mut Tree<T>, axis: Axis, a: NodeId, b: NodeId, weights: WeightPair) -> NodeId {

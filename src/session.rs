@@ -28,7 +28,7 @@ use {
 		resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
 		snapshot::Snapshot,
 		solver::{SolverPolicy, summarize},
-		tree::Tree,
+		tree::{RemoveLeafResult, Tree},
 	},
 	serde::{Deserialize, Serialize},
 	std::{collections::HashMap, ops::ControlFlow},
@@ -91,35 +91,32 @@ impl<T> Session<T> {
 	/// Validates both the underlying tree and the session targeting invariants.
 	pub fn validate(&self) -> Result<(), ValidationError> {
 		self.tree.validate()?;
-		match self.tree.root_id() {
-			None => {
-				if self.focus.is_none() && self.selection.is_none() {
-					Ok(())
-				} else {
-					Err(ValidationError::EmptyStateInconsistent)
-				}
+		if self.tree.root_id().is_none() {
+			return if self.focus.is_none() && self.selection.is_none() {
+				Ok(())
+			} else {
+				Err(ValidationError::EmptyStateInconsistent)
+			};
+		}
+
+		let focus = self.focus.ok_or(ValidationError::EmptyStateInconsistent)?;
+		if !self.tree.is_leaf(focus) {
+			return Err(ValidationError::NonLeafFocus(focus));
+		}
+		let selection = self.selection.ok_or(ValidationError::EmptyStateInconsistent)?;
+		if !self.tree.contains(selection) {
+			return Err(ValidationError::InvalidSelection(selection));
+		}
+		if self.tree.is_leaf(selection) {
+			if selection == focus {
+				Ok(())
+			} else {
+				Err(ValidationError::InvalidSelection(selection))
 			}
-			Some(_) => {
-				let focus = self.focus.ok_or(ValidationError::EmptyStateInconsistent)?;
-				if !self.tree.is_leaf(focus) {
-					return Err(ValidationError::NonLeafFocus(focus));
-				}
-				let selection = self.selection.ok_or(ValidationError::EmptyStateInconsistent)?;
-				if !self.tree.contains(selection) {
-					return Err(ValidationError::InvalidSelection(selection));
-				}
-				if self.tree.is_leaf(selection) {
-					if selection == focus {
-						Ok(())
-					} else {
-						Err(ValidationError::InvalidSelection(selection))
-					}
-				} else if self.tree.contains_in_subtree(selection, focus) {
-					Ok(())
-				} else {
-					Err(ValidationError::InvalidSelection(selection))
-				}
-			}
+		} else if self.tree.contains_in_subtree(selection, focus) {
+			Ok(())
+		} else {
+			Err(ValidationError::InvalidSelection(selection))
 		}
 	}
 
@@ -294,6 +291,7 @@ impl<T> Session<T> {
 		let fallback = self
 			.tree
 			.remove_leaf_and_collapse(focus)
+			.map(RemoveLeafResult::replacement_site)
 			.ok_or(OpError::NotLeaf(focus))?;
 		self.repair_after_mutation(focus, old_selection, fallback);
 		self.bump_revision();
@@ -472,7 +470,7 @@ impl<T> Session<T> {
 		}
 		self.ensure_fresh_snapshot(snap)?;
 		let focus = self.require_focus_leaf()?;
-		let mut summaries = HashMap::new();
+		let mut summaries = HashMap::with_capacity(self.tree.node_count());
 		if let Some(root) = self.tree.root_id() {
 			summarize(&self.tree, root, &mut summaries).map_err(OpError::Validation)?;
 		}

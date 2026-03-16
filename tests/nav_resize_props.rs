@@ -127,12 +127,11 @@ proptest! {
 		for leaf in leaf_ids(&session) {
 			for dir in [Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
 				session.set_selection(leaf).expect("select leaf");
-				match best_neighbor_oracle(&session, &snap, leaf, dir) {
-					Some(expected) => {
-						session.focus_dir(dir, &snap).expect("focus move should succeed");
-						prop_assert_eq!(session.focus(), Some(expected));
-					}
-					None => prop_assert_eq!(session.focus_dir(dir, &snap), Err(NavError::NoCandidate)),
+				if let Some(expected) = best_neighbor_oracle(&session, &snap, leaf, dir) {
+					session.focus_dir(dir, &snap).expect("focus move should succeed");
+					prop_assert_eq!(session.focus(), Some(expected));
+				} else {
+					prop_assert_eq!(session.focus_dir(dir, &snap), Err(NavError::NoCandidate));
 				}
 			}
 		}

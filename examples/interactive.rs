@@ -53,7 +53,7 @@ impl Demo {
 			if snapshot.strict_feasible { "yes" } else { "no" },
 			snapshot.violations.len(),
 			fmt_id(root_id),
-			self.session.tree().node_ids().len(),
+			self.session.tree().node_count(),
 			fmt_id(focus),
 			fmt_selection(&self.session),
 		);
@@ -191,17 +191,11 @@ fn print_tree(session: &Session<String>, id: glorp_tiles::NodeId, prefix: &str, 
 }
 
 fn annotations(session: &Session<String>, id: glorp_tiles::NodeId) -> String {
-	let mut tags = Vec::new();
-	if session.focus() == Some(id) {
-		tags.push("focus");
-	}
-	if session.selection() == Some(id) {
-		tags.push("sel");
-	}
-	if tags.is_empty() {
-		String::new()
-	} else {
-		format!(" [{}]", tags.join("]["))
+	match (session.focus() == Some(id), session.selection() == Some(id)) {
+		(false, false) => String::new(),
+		(true, false) => " [focus]".to_owned(),
+		(false, true) => " [sel]".to_owned(),
+		(true, true) => " [focus][sel]".to_owned(),
 	}
 }
 
@@ -256,7 +250,7 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 			Ok(CommandOutcome::Continue { rerender: false })
 		}
 		["print"] => Ok(CommandOutcome::Continue { rerender: true }),
-		["quit"] | ["exit"] => Ok(CommandOutcome::Quit),
+		["quit" | "exit"] => Ok(CommandOutcome::Quit),
 		["reset"] => {
 			*demo = reset_demo().map_err(|error| error.to_string())?;
 			Ok(CommandOutcome::Continue { rerender: true })
