@@ -3,7 +3,7 @@
 use {
 	glorp_tiles::{
 		Axis, BalancedPreset, Direction, DwindlePreset, LeafMeta, OpError, PresetKind, RebalanceMode, Rect,
-		ResizeStrategy, Session, Slot, Snapshot, SolverPolicy, TallPreset, WeightPair, WidePreset,
+		ResizeStrategy, Session, Slot, Snapshot, SolveError, SolverPolicy, TallPreset, WeightPair, WidePreset,
 	},
 	std::{
 		error::Error,
@@ -27,10 +27,8 @@ struct Demo {
 }
 
 impl Demo {
-	fn snapshot(&self) -> Result<Snapshot, String> {
-		self.session
-			.try_solve(self.root, &SolverPolicy::default())
-			.map_err(|error| error.to_string())
+	fn snapshot(&self) -> Result<Snapshot, SolveError> {
+		self.session.solve(self.root, &SolverPolicy::default())
 	}
 
 	fn fresh_label(&mut self) -> String {
@@ -40,7 +38,7 @@ impl Demo {
 	}
 
 	fn rerender(&self) -> Result<(), Box<dyn Error>> {
-		let snapshot = self.session.try_solve(self.root, &SolverPolicy::default())?;
+		let snapshot = self.snapshot()?;
 		let focus = self.session.focus();
 		let root_id = self.session.tree().root_id();
 
@@ -50,8 +48,8 @@ impl Demo {
 			self.root.w,
 			self.root.h,
 			self.session.revision(),
-			if snapshot.strict_feasible { "yes" } else { "no" },
-			snapshot.violations.len(),
+			if snapshot.strict_feasible() { "yes" } else { "no" },
+			snapshot.violations().len(),
 			fmt_id(root_id),
 			self.session.tree().node_count(),
 			fmt_id(focus),
@@ -71,7 +69,12 @@ impl Demo {
 			"id", "label", "x", "y", "w", "h"
 		);
 		if let Some(root_id) = root_id {
-			for id in self.session.tree().leaf_ids_dfs(root_id) {
+			for id in self
+				.session
+				.tree()
+				.leaf_ids_dfs(root_id)
+				.expect("root_id should point at a valid node")
+			{
 				let leaf = self
 					.session
 					.tree()
@@ -92,10 +95,10 @@ impl Demo {
 			}
 		}
 
-		if !snapshot.violations.is_empty() {
+		if !snapshot.violations().is_empty() {
 			println!();
 			println!("violations:");
-			for violation in &snapshot.violations {
+			for violation in snapshot.violations() {
 				println!(
 					"- node={} kind={:?} required={} actual={}",
 					violation.node, violation.kind, violation.required, violation.actual
@@ -266,7 +269,7 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 		}
 		["focus", direction] => {
 			let direction = parse_direction(direction)?;
-			let snapshot = demo.snapshot()?;
+			let snapshot = demo.snapshot().map_err(|error| error.to_string())?;
 			rerender_on(
 				demo.session
 					.focus_dir(direction, &snapshot)
@@ -303,7 +306,7 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 			let direction = parse_direction(direction)?;
 			let amount = parse_u32(amount, "amount")?;
 			let strategy = parse_resize_strategy(strategy)?;
-			let snapshot = demo.snapshot()?;
+			let snapshot = demo.snapshot().map_err(|error| error.to_string())?;
 			rerender_on(
 				demo.session
 					.grow_focus(direction, amount, strategy, &snapshot)
@@ -314,7 +317,7 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 			let direction = parse_direction(direction)?;
 			let amount = parse_u32(amount, "amount")?;
 			let strategy = parse_resize_strategy(strategy)?;
-			let snapshot = demo.snapshot()?;
+			let snapshot = demo.snapshot().map_err(|error| error.to_string())?;
 			rerender_on(
 				demo.session
 					.shrink_focus(direction, amount, strategy, &snapshot)

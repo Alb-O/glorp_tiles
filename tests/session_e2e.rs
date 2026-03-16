@@ -68,21 +68,21 @@ fn end_to_end_structural_edit_navigation_resize_flow() {
 		.expect("split focus vertically");
 
 	let root = root_rect(18, 12);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	assert_partition(&session, root, &snap);
 
 	session.focus_dir(Direction::Right, &snap).expect("move focus right");
-	let before = session.solve(root, &SolverPolicy::default());
+	let before = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let focused = session.focus().expect("focus should exist");
 	let before_rect = before.rect(focused).expect("focus rect should exist");
 	session
 		.grow_focus(Direction::Down, 3, ResizeStrategy::Local, &before)
 		.expect("grow focus downward");
-	let after = session.solve(root, &SolverPolicy::default());
+	let after = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let after_rect = after.rect(focused).expect("focus rect should exist after resize");
 
 	assert!(after_rect.h >= before_rect.h);
-	assert!(after.strict_feasible);
+	assert!(after.strict_feasible());
 	assert_eq!(leaf_ids(&session).len(), 4);
 	assert!(split_ids(&session).len() >= 3);
 	assert!(a != b && b != c && c != d);
@@ -125,13 +125,17 @@ fn split_remove_roundtrip_returns_original_layout() {
 		.map(|id| (id, snapshot_node(session.tree(), id)))
 		.collect::<Vec<_>>();
 	original_nodes.sort_by_key(|(id, _)| *id);
-	let original_snap = session.solve(root_rect(20, 10), &SolverPolicy::default());
+	let original_snap = session
+		.solve(root_rect(20, 10), &SolverPolicy::default())
+		.expect("solve");
 	let new_leaf = session
 		.split_focus(Axis::X, Slot::B, 99_u16, LeafMeta::default(), None)
 		.expect("split focus");
 	session.set_selection(new_leaf).expect("select inserted leaf");
 	session.remove_focus().expect("remove inserted leaf");
-	let roundtrip = session.solve(root_rect(20, 10), &SolverPolicy::default());
+	let roundtrip = session
+		.solve(root_rect(20, 10), &SolverPolicy::default())
+		.expect("solve");
 
 	let mut roundtrip_nodes = session
 		.tree()
@@ -142,7 +146,7 @@ fn split_remove_roundtrip_returns_original_layout() {
 	roundtrip_nodes.sort_by_key(|(id, _)| *id);
 	assert_eq!(session.tree().root_id(), original_root);
 	assert_eq!(roundtrip_nodes, original_nodes);
-	assert_eq!(roundtrip.node_rects, original_snap.node_rects);
+	assert_eq!(roundtrip.node_rects(), original_snap.node_rects());
 }
 
 #[test]
@@ -221,12 +225,12 @@ fn mirror_x_matches_geometric_reflection() {
 		.wrap_selection(Axis::Y, Slot::B, 3_u16, LeafMeta::default(), None)
 		.expect("wrap y");
 	let root = root_rect(18, 12);
-	let original = session.solve(root, &SolverPolicy::default());
+	let original = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	let root_id = session.tree().root_id().expect("non-empty tree");
 	session.set_selection(root_id).expect("select root");
 	session.mirror_selection(Axis::X).expect("mirror selection");
-	let mirrored = session.solve(root, &SolverPolicy::default());
+	let mirrored = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	for leaf in leaf_ids(&session) {
 		let original_rect = original.rect(leaf).expect("original rect missing");
@@ -245,12 +249,12 @@ fn resize_clamps_to_strict_slack() {
 		.split_focus(Axis::X, Slot::B, 2_u16, meta(3, 1, None, None, 1), None)
 		.expect("split x");
 	let root = root_rect(10, 4);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let before = snap.rect(left).expect("left rect missing");
 	session
 		.grow_focus(Direction::Right, 10, ResizeStrategy::Local, &snap)
 		.expect("grow right");
-	let after = session.solve(root, &SolverPolicy::default());
+	let after = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let after_rect = after.rect(left).expect("left rect missing after resize");
 
 	assert_eq!(before.w, 5);

@@ -8,6 +8,23 @@ use {
 	std::collections::HashMap,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefSnapshot {
+	pub revision: u64,
+	pub root: Rect,
+	pub node_rects: HashMap<NodeId, Rect>,
+	pub split_traces: Vec<glorp_tiles::SplitTrace>,
+	pub violations: Vec<glorp_tiles::Violation>,
+	pub strict_feasible: bool,
+}
+
+impl RefSnapshot {
+	#[must_use]
+	pub fn rect(&self, node: NodeId) -> Option<Rect> {
+		self.node_rects.get(&node).copied()
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RefSummary {
 	min_w: u64,
@@ -85,7 +102,12 @@ pub fn leaf_ids<T>(session: &Session<T>) -> Vec<NodeId> {
 	session
 		.tree()
 		.root_id()
-		.map(|root| session.tree().leaf_ids_dfs(root))
+		.map(|root| {
+			session
+				.tree()
+				.leaf_ids_dfs(root)
+				.expect("root_id should point at a valid node")
+		})
 		.unwrap_or_default()
 }
 
@@ -95,11 +117,15 @@ pub fn split_ids<T>(session: &Session<T>) -> Vec<NodeId> {
 
 pub fn assert_partition<T>(session: &Session<T>, root: Rect, snap: &glorp_tiles::Snapshot) {
 	let Some(tree_root) = session.tree().root_id() else {
-		assert!(snap.node_rects.is_empty());
+		assert!(snap.node_rects().is_empty());
 		return;
 	};
 	let mut cells = vec![None; usize::try_from(root.w.saturating_mul(root.h)).expect("root too large")];
-	for leaf in session.tree().leaf_ids_dfs(tree_root) {
+	for leaf in session
+		.tree()
+		.leaf_ids_dfs(tree_root)
+		.expect("root_id should point at a valid node")
+	{
 		let rect = snap.rect(leaf).expect("missing leaf rect");
 		for y in rect.top()..rect.bottom() {
 			for x in rect.left()..rect.right() {
@@ -168,6 +194,7 @@ pub fn eligible_splits_oracle<T>(
 	session
 		.tree()
 		.ancestors_nearest_first(focus)
+		.expect("focus should exist")
 		.into_iter()
 		.filter_map(|split_id| {
 			let split = session.tree().split(split_id)?;
@@ -202,9 +229,9 @@ pub fn eligible_splits_oracle<T>(
 		.collect()
 }
 
-pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: SolverPolicy) -> glorp_tiles::Snapshot {
+pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: SolverPolicy) -> RefSnapshot {
 	let mut summaries = HashMap::new();
-	let mut snapshot = glorp_tiles::Snapshot {
+	let mut snapshot = RefSnapshot {
 		revision,
 		root,
 		node_rects: HashMap::new(),
@@ -223,7 +250,7 @@ pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: Sol
 
 fn solve_reference_node<T>(
 	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, RefSummary>, policy: SolverPolicy,
-	out: &mut glorp_tiles::Snapshot,
+	out: &mut RefSnapshot,
 ) {
 	out.node_rects.insert(id, rect);
 	if let Some(leaf) = tree.leaf(id) {
@@ -328,7 +355,7 @@ fn min_option_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 	}
 }
 
-fn record_leaf_violations(node: NodeId, rect: Rect, limits: &SizeLimits, out: &mut glorp_tiles::Snapshot) {
+fn record_leaf_violations(node: NodeId, rect: Rect, limits: &SizeLimits, out: &mut RefSnapshot) {
 	if rect.w < limits.min_w {
 		out.violations.push(glorp_tiles::Violation {
 			node,
@@ -437,19 +464,23 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 			7 if leaves.len() > 1 => {
 				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
-				let snap = session.solve(root_rect(9, 7), &SolverPolicy::default());
+				let snap = session.solve(root_rect(9, 7), &SolverPolicy::default()).expect("solve");
 				let _ = session.focus_dir(direction(byte), &snap);
 			}
 			8 if leaves.len() > 1 => {
 				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
-				let snap = session.solve(root_rect(11, 9), &SolverPolicy::default());
+				let snap = session
+					.solve(root_rect(11, 9), &SolverPolicy::default())
+					.expect("solve");
 				let _ = session.grow_focus(direction(byte), 2 + u32::from(byte & 0b11), strategy(byte), &snap);
 			}
 			9 if leaves.len() > 1 => {
 				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
-				let snap = session.solve(root_rect(11, 9), &SolverPolicy::default());
+				let snap = session
+					.solve(root_rect(11, 9), &SolverPolicy::default())
+					.expect("solve");
 				let _ = session.shrink_focus(direction(byte), 1 + u32::from(byte & 0b11), strategy(byte), &snap);
 			}
 			10 if nodes.len() > 1 => {

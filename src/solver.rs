@@ -198,37 +198,30 @@ fn pref_penalty(total: u32, a: u32, wa: u32, wb: u32) -> u128 {
 /// Solves `tree` into a best-effort snapshot with revision `0`.
 ///
 /// The tree is validated before solving. For valid trees this returns a full [`Snapshot`] even
-/// when some solved leaves violate hard limits; inspect [`Snapshot::strict_feasible`] and
-/// [`Snapshot::violations`] to distinguish strict feasibility from best effort.
+/// when some solved leaves violate hard limits; inspect [`Snapshot::strict_feasible()`] and
+/// [`Snapshot::violations()`] to distinguish strict feasibility from best effort.
 pub fn solve<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
 	solve_with_revision(tree, root, 0, policy)
 }
 
 /// Solves `tree` into a best-effort snapshot tagged with `revision`.
 ///
-/// This differs from [`solve`] only in the stored [`Snapshot::revision`]. The tree is validated
+/// This differs from [`solve`] only in the stored [`Snapshot::revision()`]. The tree is validated
 /// before solving. For valid trees this returns a full [`Snapshot`] even when some solved leaves
-/// violate hard limits; strict feasibility is reported through [`Snapshot::strict_feasible`].
+/// violate hard limits; strict feasibility is reported through [`Snapshot::strict_feasible()`].
 pub fn solve_with_revision<T>(
 	tree: &Tree<T>, root: Rect, revision: u64, policy: &SolverPolicy,
 ) -> Result<Snapshot, SolveError> {
 	tree.validate().map_err(SolveError::Validation)?;
 	let node_capacity = tree.node_count();
-	let mut snapshot = Snapshot {
-		revision,
-		root,
-		node_rects: HashMap::with_capacity(node_capacity),
-		split_traces: Vec::with_capacity(node_capacity.saturating_sub(1)),
-		violations: Vec::new(),
-		strict_feasible: true,
-	};
+	let mut snapshot = Snapshot::new_unowned(revision, root, node_capacity);
 	let Some(root_id) = tree.root_id() else {
 		return Ok(snapshot);
 	};
 	let mut summaries = HashMap::with_capacity(node_capacity);
 	summarize(tree, root_id, &mut summaries).map_err(SolveError::Validation)?;
 	solve_node(tree, root_id, root, &summaries, *policy, &mut snapshot)?;
-	snapshot.strict_feasible = snapshot.violations.is_empty();
+	snapshot.set_strict_feasible(snapshot.violations().is_empty());
 	Ok(snapshot)
 }
 
@@ -256,7 +249,7 @@ pub fn solve_with_revision<T>(
 ///
 /// let root = Rect { x: 0, y: 0, w: 8, h: 4 };
 /// let snapshot = solve(session.tree(), root, &SolverPolicy::default())?;
-/// assert!(!snapshot.strict_feasible);
+/// assert!(!snapshot.strict_feasible());
 /// assert_eq!(
 ///     solve_strict(session.tree(), root, &SolverPolicy::default()),
 ///     Err(SolveError::Infeasible)
@@ -265,7 +258,7 @@ pub fn solve_with_revision<T>(
 /// ```
 pub fn solve_strict<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
 	let snapshot = solve(tree, root, policy)?;
-	if snapshot.strict_feasible {
+	if snapshot.strict_feasible() {
 		Ok(snapshot)
 	} else {
 		Err(SolveError::Infeasible)
@@ -274,12 +267,12 @@ pub fn solve_strict<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Res
 
 /// Strict solve variant that tags the returned snapshot with `revision`.
 ///
-/// This differs from [`solve_strict`] only in the stored [`Snapshot::revision`].
+/// This differs from [`solve_strict`] only in the stored [`Snapshot::revision()`].
 pub fn solve_strict_with_revision<T>(
 	tree: &Tree<T>, root: Rect, revision: u64, policy: &SolverPolicy,
 ) -> Result<Snapshot, SolveError> {
 	let snapshot = solve_with_revision(tree, root, revision, policy)?;
-	if snapshot.strict_feasible {
+	if snapshot.strict_feasible() {
 		Ok(snapshot)
 	} else {
 		Err(SolveError::Infeasible)
@@ -368,7 +361,7 @@ fn solve_node<T>(
 	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, Summary>, policy: SolverPolicy,
 	out: &mut Snapshot,
 ) -> Result<(), SolveError> {
-	out.node_rects.insert(id, rect);
+	out.node_rects_mut().insert(id, rect);
 	if let Some(leaf) = tree.leaf(id) {
 		record_leaf_violations(id, rect, &leaf.meta().limits, out);
 	} else {
@@ -400,7 +393,7 @@ fn solve_node<T>(
 		};
 		let (chosen_a, chosen_score) = choose_extent_with_score(spec, &policy);
 		let (rect_a, rect_b) = rect.split(axis, chosen_a);
-		out.split_traces.push(SplitTrace {
+		out.split_traces_mut().push(SplitTrace {
 			split: id,
 			axis,
 			total,
@@ -416,7 +409,7 @@ fn solve_node<T>(
 
 fn record_leaf_violations(node: NodeId, rect: Rect, limits: &crate::limits::SizeLimits, out: &mut Snapshot) {
 	if rect.w < limits.min_w {
-		out.violations.push(Violation {
+		out.violations_mut().push(Violation {
 			node,
 			kind: ViolationKind::MinWidth,
 			required: limits.min_w,
@@ -424,7 +417,7 @@ fn record_leaf_violations(node: NodeId, rect: Rect, limits: &crate::limits::Size
 		});
 	}
 	if rect.h < limits.min_h {
-		out.violations.push(Violation {
+		out.violations_mut().push(Violation {
 			node,
 			kind: ViolationKind::MinHeight,
 			required: limits.min_h,
@@ -432,7 +425,7 @@ fn record_leaf_violations(node: NodeId, rect: Rect, limits: &crate::limits::Size
 		});
 	}
 	if let Some(max_w) = limits.max_w.filter(|max_w| rect.w > *max_w) {
-		out.violations.push(Violation {
+		out.violations_mut().push(Violation {
 			node,
 			kind: ViolationKind::MaxWidth,
 			required: max_w,
@@ -440,7 +433,7 @@ fn record_leaf_violations(node: NodeId, rect: Rect, limits: &crate::limits::Size
 		});
 	}
 	if let Some(max_h) = limits.max_h.filter(|max_h| rect.h > *max_h) {
-		out.violations.push(Violation {
+		out.violations_mut().push(Violation {
 			node,
 			kind: ViolationKind::MaxHeight,
 			required: max_h,

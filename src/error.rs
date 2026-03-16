@@ -83,7 +83,9 @@ impl std::error::Error for SolveError {}
 pub enum NavError {
 	/// Navigation was requested on an empty session.
 	Empty,
-	/// The supplied snapshot revision does not match the current session revision.
+	/// The supplied snapshot came from a different live session instance.
+	ForeignSnapshot,
+	/// The supplied snapshot revision does not match the current live session revision.
 	StaleSnapshot,
 	/// The snapshot is missing a solved rectangle for the referenced node.
 	MissingSnapshotRect(NodeId),
@@ -116,8 +118,12 @@ pub enum OpError {
 	NotSplit(NodeId),
 	/// The operation requires a parent for the referenced node.
 	NoParent(NodeId),
-	/// The supplied snapshot revision does not match the current session revision.
+	/// The supplied snapshot came from a different live session instance.
+	ForeignSnapshot,
+	/// The supplied snapshot revision does not match the current live session revision.
 	StaleSnapshot,
+	/// The supplied leaf metadata is internally inconsistent.
+	InvalidLeafMeta,
 	/// The requested split weights were invalid, typically `(0, 0)`.
 	InvalidWeights,
 	/// The operation would create an ancestor/descendant structural conflict.

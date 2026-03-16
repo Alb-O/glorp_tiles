@@ -7,13 +7,14 @@
 //!
 //! Solving is deterministic and certifying. [`solve`] and [`Session::solve`] always produce a
 //! [`Snapshot`] when the tree is representable, even if some leaves exceed hard limits; callers
-//! inspect [`Snapshot::strict_feasible`] and [`Snapshot::violations`] to decide whether that
+//! inspect [`Snapshot::strict_feasible()`] and [`Snapshot::violations()`] to decide whether that
 //! best-effort result is acceptable. [`solve_strict`] rejects any solve with hard-limit
 //! violations.
 //!
-//! Geometry-dependent session commands require a fresh snapshot from the current session revision.
-//! Reusing an older snapshot after a structural edit yields a stale-snapshot error instead of
-//! silently acting on outdated rectangles.
+//! Geometry-dependent session commands require a fresh snapshot from the current live session
+//! instance. Reusing an older snapshot after a structural edit yields a stale-snapshot error, and
+//! reusing a snapshot from another session yields a foreign-snapshot error instead of silently
+//! acting on outdated or unrelated rectangles.
 //!
 //! Public surface map:
 //!
@@ -55,14 +56,14 @@
 //!
 //! - [`ValidationError`] reports invalid tree or session structure
 //! - [`SolveError`] separates invalid input from strict infeasibility
-//! - [`NavError`] and [`OpError`] report stale snapshots and invalid session operations
+//! - [`NavError`] and [`OpError`] report stale or foreign snapshots and invalid session operations
 //!
 //! Determinism:
 //!
 //! - leaf ids remain stable while those leaves survive; split ids remain stable until removed or
 //!   rebuilt
 //! - solving uses deterministic scoring and tie-breaking
-//! - navigation and resize operations consume a specific snapshot revision
+//! - navigation and resize operations consume a snapshot bound to one live session instance and revision
 //!
 //! ```
 //! use glorp_tiles::{
@@ -75,12 +76,12 @@
 //! let _log = session.wrap_selection(Axis::Y, Slot::B, "log", LeafMeta::default(), None)?;
 //!
 //! let root = Rect { x: 0, y: 0, w: 120, h: 40 };
-//! let snapshot = session.solve(root, &SolverPolicy::default());
+//! let snapshot = session.solve(root, &SolverPolicy::default())?;
 //! session.focus_dir(Direction::Right, &snapshot)?;
 //! session.grow_focus(Direction::Down, 4, ResizeStrategy::Local, &snapshot)?;
 //!
-//! let solved = session.solve(root, &SolverPolicy::default());
-//! assert!(solved.strict_feasible);
+//! let solved = session.solve(root, &SolverPolicy::default())?;
+//! assert!(solved.strict_feasible());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 #![deny(missing_docs)]

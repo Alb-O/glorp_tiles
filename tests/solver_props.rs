@@ -79,16 +79,16 @@ proptest! {
 		let session = exercise_trace(&bytes);
 		let root = root_rect(w, h);
 		let policy = stressed_policy(seed);
-		let production = session.solve(root, &policy);
+		let production = session.solve(root, &policy).expect("solve");
 		let reference = solve_reference(session.tree(), session.revision(), root, policy);
-		prop_assert_eq!(&production.node_rects, &reference.node_rects);
-		prop_assert_eq!(&production.violations, &reference.violations);
-		prop_assert_eq!(production.strict_feasible, reference.strict_feasible);
+		prop_assert_eq!(production.node_rects(), &reference.node_rects);
+		prop_assert_eq!(production.violations(), &reference.violations);
+		prop_assert_eq!(production.strict_feasible(), reference.strict_feasible);
 		assert_partition(&session, root, &production);
 
 		let encoded = serde_json::to_string(&session).expect("session should serialize");
 		let decoded: Session<u16> = serde_json::from_str(&encoded).expect("session should deserialize");
-		let replay = decoded.solve(root, &policy);
+		let replay = decoded.solve(root, &policy).expect("solve");
 		prop_assert_eq!(production, replay);
 	}
 
@@ -180,10 +180,10 @@ fn scale_symmetry_holds_with_exact_integer_arithmetic() {
 		.split_focus(Axis::Y, Slot::B, 3_u16, scaled_meta, None)
 		.expect("split scaled y");
 	let policy = SolverPolicy::default();
-	let base = session.solve(root_rect(12, 12), &policy);
-	let scaled_snap = scaled.solve(root_rect(36, 36), &policy);
+	let base = session.solve(root_rect(12, 12), &policy).expect("solve");
+	let scaled_snap = scaled.solve(root_rect(36, 36), &policy).expect("solve");
 
-	for (id, rect) in &base.node_rects {
+	for (id, rect) in base.node_rects() {
 		let scaled_rect = scaled_snap.rect(*id).expect("scaled rect missing");
 		assert_eq!(scaled_rect.x, rect.x * 3);
 		assert_eq!(scaled_rect.y, rect.y * 3);
@@ -212,7 +212,7 @@ fn solver_handles_maximal_weights_without_panicking() {
 	let snapshot = solve(session.tree(), root_rect(12, 5), &SolverPolicy::default())
 		.expect("maximal weights should remain solvable");
 
-	assert!(snapshot.strict_feasible);
+	assert!(snapshot.strict_feasible());
 	assert_eq!(snapshot.rect(1).expect("left rect").w, 6);
 	assert_eq!(snapshot.rect(2).expect("right rect").w, 6);
 }
@@ -266,7 +266,7 @@ fn summarize_rejects_finite_max_width_sum_overflow() {
 }
 
 #[test]
-fn session_try_solve_reports_unrepresentable_summary_overflow() {
+fn session_solve_reports_unrepresentable_summary_overflow() {
 	let huge = LeafMeta {
 		limits: glorp_tiles::SizeLimits {
 			min_w: u32::MAX,
@@ -281,7 +281,7 @@ fn session_try_solve_reports_unrepresentable_summary_overflow() {
 		.expect("split root");
 
 	assert!(matches!(
-		session.try_solve(root_rect(8, 4), &SolverPolicy::default()),
+		session.solve(root_rect(8, 4), &SolverPolicy::default()),
 		Err(SolveError::Validation(ValidationError::ArithmeticOverflow {
 			field: "min_w",
 			..

@@ -2,8 +2,6 @@
 
 `glorp_tiles` is a deterministic binary split tiling library for editor and TUI layouts.
 
-It implements the design in [`docs/001.design_spec_v1.md`](docs/001.design_spec_v1.md):
-
 - single-root binary split trees
 - exact half-open integer rectangles
 - pure best-effort solver with strict feasibility certification
@@ -33,12 +31,12 @@ let _b = session.split_focus(Axis::X, Slot::B, "side", LeafMeta::default(), None
 let _c = session.wrap_selection(Axis::Y, Slot::B, "log", LeafMeta::default(), None)?;
 
 let root = Rect { x: 0, y: 0, w: 120, h: 40 };
-let snap = session.solve(root, &SolverPolicy::default());
+let snap = session.solve(root, &SolverPolicy::default())?;
 session.focus_dir(Direction::Right, &snap)?;
 session.grow_focus(Direction::Down, 4, ResizeStrategy::Local, &snap)?;
 
-let solved = session.solve(root, &SolverPolicy::default());
-assert!(solved.strict_feasible);
+let solved = session.solve(root, &SolverPolicy::default())?;
+assert!(solved.strict_feasible());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -83,6 +81,9 @@ Behavior notes:
 - subtree operations target the current `selection`, not necessarily the
   focused leaf
 - geometry-driven commands solve fresh from the current root size before acting
+- geometry-driven commands reject snapshots from other live `Session` instances
+- free solver snapshots are inspectable, but session geometry commands require a snapshot created
+  by that same live `Session`
 - some leaf-targeted subtree operations are no-ops or errors according to the
   library API
 

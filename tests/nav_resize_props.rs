@@ -122,7 +122,7 @@ proptest! {
 	) {
 		let mut session = exercise_trace(&bytes);
 		let root = root_rect(w, h);
-		let snap = session.solve(root, &SolverPolicy::default());
+		let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 		for leaf in leaf_ids(&session) {
 			for dir in [Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
@@ -153,7 +153,7 @@ fn navigation_tie_breaks_by_dfs_order() {
 		.expect("split left branch vertically");
 
 	session.set_selection(current).expect("restore current focus");
-	let snap = session.solve(root_rect(8, 8), &SolverPolicy::default());
+	let snap = session.solve(root_rect(8, 8), &SolverPolicy::default()).expect("solve");
 
 	assert_eq!(
 		best_neighbor_oracle(&session, &snap, current, Direction::Left),
@@ -170,7 +170,7 @@ fn navigation_tie_breaks_by_dfs_order() {
 fn resize_excludes_same_axis_ancestor_when_edge_does_not_match() {
 	let (mut session, focus, root_split) = edge_mismatch_session();
 	let root = root_rect(12, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Right);
 	let root_weights_before = split_weights(&session, root_split);
 	let before = snap.rect(focus).expect("focus rect");
@@ -179,7 +179,7 @@ fn resize_excludes_same_axis_ancestor_when_edge_does_not_match() {
 	session
 		.grow_focus(Direction::Right, 99, ResizeStrategy::Local, &snap)
 		.expect("local grow should succeed");
-	let after = session.solve(root, &SolverPolicy::default());
+	let after = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let after_rect = after.rect(focus).expect("focus rect after resize");
 
 	assert_eq!(split_weights(&session, root_split), root_weights_before);
@@ -190,7 +190,7 @@ fn resize_excludes_same_axis_ancestor_when_edge_does_not_match() {
 fn local_resize_matches_nearest_eligible_slack() {
 	let (mut session, focus, _) = edge_mismatch_session();
 	let root = root_rect(12, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Right);
 	let before = snap.rect(focus).expect("focus rect");
 	let expected = eligible[0].slack(1);
@@ -198,7 +198,7 @@ fn local_resize_matches_nearest_eligible_slack() {
 	session
 		.grow_focus(Direction::Right, 99, ResizeStrategy::Local, &snap)
 		.expect("local grow should succeed");
-	let after = session.solve(root, &SolverPolicy::default());
+	let after = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	assert_eq!(
 		after.rect(focus).expect("focus rect after resize").right() - before.right(),
@@ -210,7 +210,7 @@ fn local_resize_matches_nearest_eligible_slack() {
 fn ancestor_chain_rewrites_split_preferences_greedily_nearest_first() {
 	let (mut session, focus, _) = chain_session();
 	let root = root_rect(18, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Left);
 	let request = 24;
 	let expected = ancestor_chain_allocations(&eligible, request, 1);
@@ -247,7 +247,7 @@ fn ancestor_chain_rewrites_split_preferences_greedily_nearest_first() {
 fn distributed_by_slack_uses_proportional_allocation_with_stable_remainder() {
 	let (mut session, focus, splits) = chain_session();
 	let root = root_rect(18, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Left);
 	let request = 5;
 	let expected = distributed_allocations(&eligible, request, 1);
@@ -285,7 +285,7 @@ fn distributed_by_slack_uses_proportional_allocation_with_stable_remainder() {
 fn resize_oracle_and_session_agree_on_eligible_split_order() {
 	let (mut session, focus, splits) = chain_session();
 	let root = root_rect(18, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Left);
 	let before = splits
 		.iter()
@@ -308,7 +308,7 @@ fn resize_oracle_and_session_agree_on_eligible_split_order() {
 fn same_axis_chain_slack_budget_can_exceed_observed_leaf_motion() {
 	let (mut session, focus, _) = chain_session();
 	let root = root_rect(18, 6);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let eligible = eligible_splits_oracle(&session, &snap, focus, Direction::Left);
 	let before = snap.rect(focus).expect("focus rect");
 	let raw_sum = eligible.iter().map(|entry| entry.slack(1)).sum::<u32>();
@@ -316,7 +316,7 @@ fn same_axis_chain_slack_budget_can_exceed_observed_leaf_motion() {
 	session
 		.shrink_focus(Direction::Left, 24, ResizeStrategy::AncestorChain, &snap)
 		.expect("ancestor-chain shrink should succeed");
-	let after = session.solve(root, &SolverPolicy::default());
+	let after = session.solve(root, &SolverPolicy::default()).expect("solve");
 	let motion = left_edge(after.rect(focus).expect("focus rect after resize")) - left_edge(before);
 
 	assert!(raw_sum > before.w);

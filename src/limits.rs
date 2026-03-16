@@ -92,6 +92,16 @@ pub struct LeafMeta {
 	pub priority: Priority,
 }
 
+#[must_use]
+pub(crate) fn leaf_meta_is_valid(meta: &LeafMeta) -> bool {
+	let limits = meta.limits;
+
+	limits.max_w.is_none_or(|max_w| limits.min_w <= max_w)
+		&& limits.max_h.is_none_or(|max_h| limits.min_h <= max_h)
+		&& meta.priority.shrink != 0
+		&& meta.priority.grow != 0
+}
+
 /// Derived feasibility envelope for an entire subtree.
 ///
 /// This summary is computed bottom-up from leaf metadata and lets the solver reason about a

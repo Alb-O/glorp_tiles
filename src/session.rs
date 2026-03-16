@@ -3,7 +3,9 @@
 //! [`Session`] owns a tree plus focus, selection, and a monotonic revision counter. Operations
 //! that rewrite structure or weights bump the revision, while targeting-only changes do not.
 //! Geometry-driven commands such as navigation and resize require a fresh [`Snapshot`] whose
-//! revision matches the current session revision.
+//! owner and revision match the current live session instance. Snapshots produced by the free
+//! solver functions are ownerless and therefore usable for inspection but not for session-driven
+//! geometry commands.
 //!
 //! ```text
 //!             [root]
@@ -21,8 +23,8 @@ use {
 	crate::{
 		error::{NavError, OpError, SolveError, ValidationError},
 		geom::{Axis, Direction, Rect, Slot},
-		ids::{NodeId, Revision},
-		limits::{LeafMeta, WeightPair, canonicalize_weights},
+		ids::{NodeId, Revision, SessionOwner},
+		limits::{LeafMeta, WeightPair, canonicalize_weights, leaf_meta_is_valid},
 		nav::best_neighbor,
 		preset::{PresetKind, apply_preset_subtree},
 		resize::{ResizeStrategy, distribute_resize, eligible_splits, resize_sign},
@@ -58,17 +60,48 @@ pub enum RebalanceMode {
 /// session.insert_root("main", LeafMeta::default())?;
 /// session.split_focus(Axis::X, Slot::B, "side", LeafMeta::default(), None)?;
 ///
-/// let snapshot = session.solve(Rect { x: 0, y: 0, w: 120, h: 40 }, &SolverPolicy::default());
-/// assert_eq!(snapshot.node_rects.len(), 3);
+/// let snapshot = session.solve(Rect { x: 0, y: 0, w: 120, h: 40 }, &SolverPolicy::default())?;
+/// assert_eq!(snapshot.node_rects().len(), 3);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Session<T> {
 	tree: Tree<T>,
 	focus: Option<NodeId>,
 	selection: Option<NodeId>,
 	revision: Revision,
+	#[serde(skip, default = "SessionOwner::fresh")]
+	owner: SessionOwner,
 }
+
+impl<T> Clone for Session<T>
+where
+	T: Clone,
+{
+	fn clone(&self) -> Self {
+		Self {
+			tree: self.tree.clone(),
+			focus: self.focus,
+			selection: self.selection,
+			revision: self.revision,
+			owner: SessionOwner::fresh(),
+		}
+	}
+}
+
+impl<T> PartialEq for Session<T>
+where
+	T: PartialEq,
+{
+	fn eq(&self, other: &Self) -> bool {
+		self.tree == other.tree
+			&& self.focus == other.focus
+			&& self.selection == other.selection
+			&& self.revision == other.revision
+	}
+}
+
+impl<T> Eq for Session<T> where T: Eq {}
 
 impl<T> Default for Session<T> {
 	fn default() -> Self {
@@ -77,6 +110,7 @@ impl<T> Default for Session<T> {
 			focus: None,
 			selection: None,
 			revision: 0,
+			owner: SessionOwner::fresh(),
 		}
 	}
 }
@@ -111,10 +145,10 @@ impl<T> Session<T> {
 		}
 	}
 
-	/// Solves the current tree into a snapshot tagged with the current revision.
+	/// Solves the current tree into a snapshot tagged with the current revision and session owner.
 	///
-	/// This is the infallible convenience wrapper over [`Self::try_solve`]. It does not mutate the
-	/// session.
+	/// Solving does not mutate the session. The returned snapshot can be reused for geometry-driven
+	/// session commands until the session structure or split weights change.
 	///
 	/// ```text
 	/// edit tree/weights
@@ -123,26 +157,16 @@ impl<T> Session<T> {
 	/// revision += 1
 	///     |
 	///     v
-	/// solve(root, policy) -> Snapshot { revision = N }
+	/// solve(root, policy) -> Snapshot { revision = N, owner = this session }
 	///   -> focus_dir(..., snapshot N)   OK
 	///   -> grow_focus(..., snapshot N)  OK
 	/// ```
-	///
-	/// # Panics
-	///
-	/// Panics if session invariants have been broken badly enough that solving unexpectedly fails.
-	#[must_use]
-	pub fn solve(&self, root: Rect, policy: &SolverPolicy) -> Snapshot {
-		self.try_solve(root, policy)
-			.expect("session should maintain a valid and representable tree")
-	}
-
-	/// Solves the current tree into a snapshot tagged with the current revision.
-	///
-	/// Unlike [`Self::solve`], this returns [`SolveError`] instead of panicking when validation or
-	/// solving fails. Solving never mutates the session.
-	pub fn try_solve(&self, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
-		crate::solver::solve_with_revision(&self.tree, root, self.revision, policy)
+	pub fn solve(&self, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
+		let mut snapshot = crate::solver::solve_with_revision(&self.tree, root, self.revision, policy)?;
+		// Only live session solves stamp ownership; free solver entry points stay ownerless and
+		// therefore cannot drive session-relative navigation or resize commands later.
+		snapshot.set_owner(self.owner);
+		Ok(snapshot)
 	}
 
 	/// Returns the underlying tree.
@@ -219,6 +243,7 @@ impl<T> Session<T> {
 		if self.tree.root_id().is_some() {
 			return Err(OpError::NonEmpty);
 		}
+		validate_leaf_meta(&meta)?;
 		let id = self.tree.new_leaf(payload, meta);
 		self.tree.set_root(Some(id));
 		self.focus = Some(id);
@@ -237,6 +262,7 @@ impl<T> Session<T> {
 		&mut self, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
 		let focus = self.require_focus_leaf()?;
+		validate_leaf_meta(&meta)?;
 		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
 		let old_selection = self.selection;
 		let new_leaf = self.tree.new_leaf(payload, meta);
@@ -256,6 +282,7 @@ impl<T> Session<T> {
 	) -> Result<NodeId, OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
 		let focus = self.require_focus_leaf()?;
+		validate_leaf_meta(&meta)?;
 		let old_selection = self.selection;
 		let new_leaf = self.tree.new_leaf(payload, meta);
 		let split_id = self.tree.attach_as_sibling(
@@ -335,8 +362,9 @@ impl<T> Session<T> {
 
 	/// Moves focus to the best solved leaf neighbor in `dir`.
 	///
-	/// The supplied snapshot must be fresh for the current revision. On success this updates focus,
-	/// repairs selection to keep containing the new focus, and does not bump the revision.
+	/// The supplied snapshot must belong to this live session and match the current revision. On
+	/// success this updates focus, repairs selection to keep containing the new focus, and does not
+	/// bump the revision.
 	pub fn focus_dir(&mut self, dir: Direction, snap: &Snapshot) -> Result<(), NavError> {
 		self.ensure_fresh_snapshot(snap)
 			.map_err(|error| map_op_to_nav(error).expect("focus_dir should only map nav-compatible op errors"))?;
@@ -369,10 +397,8 @@ impl<T> Session<T> {
 
 	/// Attempts to grow the focused leaf outward in `dir`.
 	///
-	/// The supplied snapshot must be fresh for the current revision. `amount == 0` is a no-op, and
-	/// requests with no eligible split are also no-ops. Successful calls with at least one eligible
-	/// split bump the revision after attempting the resize, even if slack clamped every resulting
-	/// delta to zero.
+	/// The supplied snapshot must belong to this live session and match the current revision.
+	/// `amount == 0` is a no-op, and requests with no effective weight change are also no-ops.
 	pub fn grow_focus(
 		&mut self, dir: Direction, amount: u32, strategy: ResizeStrategy, snap: &Snapshot,
 	) -> Result<(), OpError> {
@@ -381,10 +407,8 @@ impl<T> Session<T> {
 
 	/// Attempts to shrink the focused leaf inward from `dir`.
 	///
-	/// The supplied snapshot must be fresh for the current revision. `amount == 0` is a no-op, and
-	/// requests with no eligible split are also no-ops. Successful calls with at least one eligible
-	/// split bump the revision after attempting the resize, even if slack clamped every resulting
-	/// delta to zero.
+	/// The supplied snapshot must belong to this live session and match the current revision.
+	/// `amount == 0` is a no-op, and requests with no effective weight change are also no-ops.
 	pub fn shrink_focus(
 		&mut self, dir: Direction, amount: u32, strategy: ResizeStrategy, snap: &Snapshot,
 	) -> Result<(), OpError> {
@@ -405,22 +429,22 @@ impl<T> Session<T> {
 
 	/// Mirrors the selected subtree across `axis`.
 	///
-	/// Leaf selections are a structural no-op, but the operation still succeeds and bumps the
-	/// revision.
+	/// Leaf selections are a structural no-op and do not bump the revision.
 	pub fn mirror_selection(&mut self, axis: Axis) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
-		self.tree.mirror_subtree_axis(selection, axis);
+		if !self.tree.mirror_subtree_axis(selection, axis) {
+			return Ok(());
+		}
 		self.bump_revision();
 		self.validate().map_err(OpError::Validation)
 	}
 
 	/// Rebalances split weights within the selected subtree according to `mode`.
 	///
-	/// Selecting a leaf currently behaves as a no-op in the underlying tree implementation, but
-	/// the operation still succeeds and bumps the revision.
+	/// Selecting a leaf or an already-canonical subtree is a no-op and does not bump the revision.
 	pub fn rebalance_selection(&mut self, mode: RebalanceMode) -> Result<(), OpError> {
 		let selection = self.selection.ok_or(OpError::Empty)?;
-		match mode {
+		let changed = match mode {
 			RebalanceMode::BinaryEqual => self
 				.tree
 				.rebalance_subtree_binary_equal(selection)
@@ -428,8 +452,12 @@ impl<T> Session<T> {
 			RebalanceMode::LeafCount => {
 				self.tree
 					.rebalance_subtree_leaf_count(selection)
-					.ok_or(OpError::NotSplit(selection))?;
+					.ok_or(OpError::NotSplit(selection))?
+					.1
 			}
+		};
+		if !changed {
+			return Ok(());
 		}
 		self.bump_revision();
 		self.validate().map_err(OpError::Validation)
@@ -471,6 +499,10 @@ impl<T> Session<T> {
 		}
 		let sign = resize_sign(dir, outward);
 		let allocations = distribute_resize(amount, strategy, sign, &eligible);
+		if allocations.is_empty() {
+			return Ok(());
+		}
+		let mut changed = false;
 		for (eligible_idx, delta) in allocations {
 			if delta == 0 {
 				continue;
@@ -485,9 +517,13 @@ impl<T> Session<T> {
 			};
 			let total = info.total;
 			let weights = canonicalize_weights(new_a, total - new_a);
-			self.tree
+			changed |= self
+				.tree
 				.set_split_weights(info.split, weights)
 				.ok_or(OpError::NotSplit(info.split))?;
+		}
+		if !changed {
+			return Ok(());
 		}
 		self.bump_revision();
 		self.validate().map_err(OpError::Validation)
@@ -550,11 +586,14 @@ impl<T> Session<T> {
 	}
 
 	fn ensure_fresh_snapshot(&self, snap: &Snapshot) -> Result<(), OpError> {
-		if snap.revision == self.revision {
-			Ok(())
-		} else {
-			Err(OpError::StaleSnapshot)
+		// Check ownership before revision so callers can distinguish "wrong live session" from
+		// "right session, but stale".
+		if snap.owner() != Some(self.owner) {
+			return Err(OpError::ForeignSnapshot);
 		}
+		(snap.revision() == self.revision)
+			.then_some(())
+			.ok_or(OpError::StaleSnapshot)
 	}
 
 	fn require_focus_leaf(&self) -> Result<NodeId, OpError> {
@@ -588,15 +627,21 @@ impl<T> Session<T> {
 	}
 }
 
+fn validate_leaf_meta(meta: &LeafMeta) -> Result<(), OpError> {
+	leaf_meta_is_valid(meta).then_some(()).ok_or(OpError::InvalidLeafMeta)
+}
+
 fn map_op_to_nav(error: OpError) -> Option<NavError> {
 	match error {
 		OpError::Empty => Some(NavError::Empty),
+		OpError::ForeignSnapshot => Some(NavError::ForeignSnapshot),
 		OpError::StaleSnapshot => Some(NavError::StaleSnapshot),
 		OpError::Validation(err) => Some(NavError::Validation(err)),
 		OpError::MissingNode(id) | OpError::NotLeaf(id) | OpError::NotSplit(id) => {
 			Some(NavError::MissingSnapshotRect(id))
 		}
 		OpError::NonEmpty
+		| OpError::InvalidLeafMeta
 		| OpError::InvalidWeights
 		| OpError::NoParent(_)
 		| OpError::SameNode
@@ -615,6 +660,7 @@ mod tests {
 	#[test]
 	fn nav_compatible_op_errors_map_exactly() {
 		assert_eq!(map_op_to_nav(OpError::Empty), Some(NavError::Empty));
+		assert_eq!(map_op_to_nav(OpError::ForeignSnapshot), Some(NavError::ForeignSnapshot));
 		assert_eq!(map_op_to_nav(OpError::StaleSnapshot), Some(NavError::StaleSnapshot));
 		assert_eq!(
 			map_op_to_nav(OpError::Validation(ValidationError::Cycle(7))),

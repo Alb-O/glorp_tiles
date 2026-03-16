@@ -3,8 +3,8 @@ mod common;
 use {
 	common::root_rect,
 	glorp_tiles::{
-		Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, Slot,
-		SolverPolicy, TallPreset, ValidationError, WeightPair,
+		Axis, BalancedPreset, Direction, LeafMeta, NavError, OpError, PresetKind, ResizeStrategy, Session, SizeLimits,
+		Slot, SolverPolicy, TallPreset, ValidationError, WeightPair, solve_with_revision,
 	},
 };
 
@@ -26,10 +26,24 @@ fn three_leaf_session() -> (Session<u8>, u64) {
 	(session, leaf)
 }
 
+fn invalid_meta() -> LeafMeta {
+	LeafMeta {
+		limits: SizeLimits {
+			min_w: 4,
+			min_h: 1,
+			max_w: Some(2),
+			max_h: None,
+		},
+		..LeafMeta::default()
+	}
+}
+
 #[test]
 fn empty_navigation_reports_empty_without_synthesized_validation() {
 	let mut session = Session::<u8>::new();
-	let snap = session.solve(root_rect(12, 8), &SolverPolicy::default());
+	let snap = session
+		.solve(root_rect(12, 8), &SolverPolicy::default())
+		.expect("solve");
 
 	assert_eq!(session.focus_dir(Direction::Right, &snap), Err(NavError::Empty));
 }
@@ -57,7 +71,7 @@ fn split_ids_postorder_returns_descendants_before_ancestors() {
 	let deepest = tree.parent_of(a).expect("deepest split should exist");
 	let middle = tree.parent_of(deepest).expect("middle split should exist");
 	let root = tree.parent_of(middle).expect("root split should exist");
-	let ids = tree.split_ids_postorder(root);
+	let ids = tree.split_ids_postorder(root).expect("root should exist");
 
 	assert_eq!(ids.len(), 3);
 	assert_eq!(ids, vec![deepest, middle, root]);
@@ -69,7 +83,7 @@ fn split_ids_postorder_returns_descendants_before_ancestors() {
 fn focus_and_selection_ops_do_not_stale_snapshots() {
 	let mut session = two_leaf_session();
 	let root = root_rect(12, 8);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	session
 		.focus_dir(Direction::Right, &snap)
@@ -80,12 +94,12 @@ fn focus_and_selection_ops_do_not_stale_snapshots() {
 		.focus_dir(Direction::Left, &snap)
 		.expect("selection-only ops should keep the original snapshot fresh");
 
-	assert_eq!(session.revision(), snap.revision);
+	assert_eq!(session.revision(), snap.revision());
 	assert_eq!(
 		session
-			.try_solve(root, &SolverPolicy::default())
-			.expect("try_solve should remain fresh")
-			.revision,
+			.solve(root, &SolverPolicy::default())
+			.expect("solve should remain fresh")
+			.revision(),
 		session.revision()
 	);
 }
@@ -94,7 +108,7 @@ fn focus_and_selection_ops_do_not_stale_snapshots() {
 fn structural_mutation_stales_old_snapshot() {
 	let mut session = two_leaf_session();
 	let root = root_rect(12, 8);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	let _ = session
 		.split_focus(Axis::Y, Slot::B, 3, LeafMeta::default(), None)
@@ -111,7 +125,7 @@ fn structural_mutation_stales_old_snapshot() {
 fn resize_mutation_stales_old_snapshot() {
 	let mut session = two_leaf_session();
 	let root = root_rect(12, 8);
-	let snap = session.solve(root, &SolverPolicy::default());
+	let snap = session.solve(root, &SolverPolicy::default()).expect("solve");
 
 	session
 		.grow_focus(Direction::Right, 1, ResizeStrategy::Local, &snap)
@@ -125,6 +139,68 @@ fn resize_mutation_stales_old_snapshot() {
 }
 
 #[test]
+fn foreign_and_ownerless_snapshots_are_rejected() {
+	let root = root_rect(12, 8);
+	let mut first = two_leaf_session();
+	let mut second = two_leaf_session();
+	let first_snap = first.solve(root, &SolverPolicy::default()).expect("solve");
+	let ownerless = solve_with_revision(first.tree(), root, first.revision(), &SolverPolicy::default()).expect("solve");
+
+	assert_eq!(
+		second.focus_dir(Direction::Left, &first_snap),
+		Err(NavError::ForeignSnapshot)
+	);
+	assert_eq!(
+		second.grow_focus(Direction::Right, 1, ResizeStrategy::Local, &first_snap),
+		Err(OpError::ForeignSnapshot)
+	);
+	assert_eq!(
+		first.focus_dir(Direction::Left, &ownerless),
+		Err(NavError::ForeignSnapshot)
+	);
+	assert_eq!(
+		first.grow_focus(Direction::Right, 1, ResizeStrategy::Local, &ownerless),
+		Err(OpError::ForeignSnapshot)
+	);
+}
+
+#[test]
+fn invalid_leaf_meta_insertions_are_atomic() {
+	let bad = invalid_meta();
+
+	let mut empty = Session::<u8>::new();
+	assert_eq!(empty.insert_root(1, bad.clone()), Err(OpError::InvalidLeafMeta));
+	assert_eq!(empty, Session::new());
+
+	let mut split = two_leaf_session();
+	let split_before = split.clone();
+	assert_eq!(
+		split.split_focus(Axis::Y, Slot::B, 3, bad.clone(), None),
+		Err(OpError::InvalidLeafMeta)
+	);
+	assert_eq!(split, split_before);
+
+	let mut wrap = two_leaf_session();
+	let wrap_before = wrap.clone();
+	assert_eq!(
+		wrap.wrap_selection(Axis::Y, Slot::B, 3, bad, None),
+		Err(OpError::InvalidLeafMeta)
+	);
+	assert_eq!(wrap, wrap_before);
+}
+
+#[test]
+fn tree_helpers_return_none_for_missing_ids() {
+	let session = two_leaf_session();
+	let tree = session.tree();
+
+	assert_eq!(tree.path_to_root(999), None);
+	assert_eq!(tree.ancestors_nearest_first(999), None);
+	assert_eq!(tree.leaf_ids_dfs(999), None);
+	assert_eq!(tree.split_ids_postorder(999), None);
+}
+
+#[test]
 fn targeting_helpers_preserve_invariants_without_bumping_revision() {
 	let mut session = two_leaf_session();
 	let right_leaf = 2;
@@ -134,7 +210,9 @@ fn targeting_helpers_preserve_invariants_without_bumping_revision() {
 	let lower_right = session
 		.split_focus(Axis::Y, Slot::B, 3, LeafMeta::default(), None)
 		.expect("split right leaf");
-	let snap = session.solve(root_rect(12, 8), &SolverPolicy::default());
+	let snap = session
+		.solve(root_rect(12, 8), &SolverPolicy::default())
+		.expect("solve");
 	let root = session.tree().root_id().expect("root should exist");
 	let right_split = session.tree().parent_of(right_leaf).expect("nested split should exist");
 	let revision = session.revision();
@@ -216,6 +294,78 @@ fn apply_preset_noops_do_not_bump_revision() {
 	assert_eq!(matching.revision(), matching_revision);
 	assert_eq!(matching, matching_before);
 	matching.validate().expect("matching no-op should stay valid");
+}
+
+#[test]
+fn mirror_rebalance_and_zero_effect_resize_noops_do_not_bump_revision() {
+	let mut mirror = two_leaf_session();
+	let mirror_revision = mirror.revision();
+	mirror.set_selection(1).expect("select leaf");
+	mirror.mirror_selection(Axis::X).expect("leaf mirror should no-op");
+	assert_eq!(mirror.revision(), mirror_revision);
+
+	let mut rebalance = two_leaf_session();
+	let leaf_revision = rebalance.revision();
+	rebalance.set_selection(1).expect("select leaf");
+	rebalance
+		.rebalance_selection(glorp_tiles::RebalanceMode::LeafCount)
+		.expect("leaf rebalance should no-op");
+	assert_eq!(rebalance.revision(), leaf_revision);
+
+	let root = rebalance.tree().root_id().expect("root should exist");
+	rebalance.set_selection(root).expect("select root split");
+	rebalance
+		.rebalance_selection(glorp_tiles::RebalanceMode::LeafCount)
+		.expect("first rebalance");
+	let canonical_revision = rebalance.revision();
+	rebalance
+		.rebalance_selection(glorp_tiles::RebalanceMode::LeafCount)
+		.expect("second rebalance should no-op");
+	assert_eq!(rebalance.revision(), canonical_revision);
+
+	let mut resize = Session::new();
+	let _left = resize
+		.insert_root(
+			1_u8,
+			LeafMeta {
+				limits: SizeLimits {
+					min_w: 4,
+					min_h: 1,
+					max_w: None,
+					max_h: None,
+				},
+				..LeafMeta::default()
+			},
+		)
+		.expect("insert root");
+	let _right = resize
+		.split_focus(
+			Axis::X,
+			Slot::B,
+			2_u8,
+			LeafMeta {
+				limits: SizeLimits {
+					min_w: 3,
+					min_h: 1,
+					max_w: None,
+					max_h: None,
+				},
+				..LeafMeta::default()
+			},
+			None,
+		)
+		.expect("split root");
+	let root_rect = root_rect(10, 4);
+	let first_snap = resize.solve(root_rect, &SolverPolicy::default()).expect("solve");
+	resize
+		.grow_focus(Direction::Right, 10, ResizeStrategy::Local, &first_snap)
+		.expect("first grow");
+	let maxed_revision = resize.revision();
+	let second_snap = resize.solve(root_rect, &SolverPolicy::default()).expect("solve");
+	resize
+		.grow_focus(Direction::Right, 1, ResizeStrategy::Local, &second_snap)
+		.expect("second grow should clamp to no-op");
+	assert_eq!(resize.revision(), maxed_revision);
 }
 
 #[test]

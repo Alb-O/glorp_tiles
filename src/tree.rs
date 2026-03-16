@@ -26,7 +26,7 @@ use {
 		error::{OpError, ValidationError},
 		geom::{Axis, Slot},
 		ids::NodeId,
-		limits::{LeafMeta, WeightPair, canonicalize_weights},
+		limits::{LeafMeta, WeightPair, canonicalize_weights, leaf_meta_is_valid},
 	},
 	serde::{Deserialize, Serialize},
 	std::{
@@ -323,12 +323,7 @@ impl<T> Tree<T> {
 		}
 		match node {
 			Node::Leaf(leaf) => {
-				let limits = leaf.meta.limits;
-				if limits.max_w.is_some_and(|max_w| limits.min_w > max_w)
-					|| limits.max_h.is_some_and(|max_h| limits.min_h > max_h)
-					|| leaf.meta.priority.shrink == 0
-					|| leaf.meta.priority.grow == 0
-				{
+				if !leaf_meta_is_valid(&leaf.meta) {
 					return Err(ValidationError::InvalidLeafLimits(id));
 				}
 			}
@@ -449,29 +444,36 @@ impl<T> Tree<T> {
 
 	/// Returns the path from `id` to the root, inclusive.
 	///
-	/// The returned vector starts with `id` and ends with the root.
+	/// The returned vector starts with `id` and ends with the root. Returns `None` when `id` is
+	/// not present in the tree.
 	#[must_use]
-	pub fn path_to_root(&self, mut id: NodeId) -> Vec<NodeId> {
+	pub fn path_to_root(&self, mut id: NodeId) -> Option<Vec<NodeId>> {
+		if !self.contains(id) {
+			return None;
+		}
 		let mut out = vec![id];
 		while let Some(parent) = self.parent_of(id) {
 			out.push(parent);
 			id = parent;
 		}
-		out
+		Some(out)
 	}
 
 	/// Returns the ancestors of `id` from nearest parent to root.
 	///
-	/// `id` itself is not included.
+	/// `id` itself is not included. Returns `None` when `id` is not present in the tree.
 	#[must_use]
-	pub fn ancestors_nearest_first(&self, id: NodeId) -> Vec<NodeId> {
+	pub fn ancestors_nearest_first(&self, id: NodeId) -> Option<Vec<NodeId>> {
+		if !self.contains(id) {
+			return None;
+		}
 		let mut out = Vec::new();
 		let mut cursor = self.parent_of(id);
 		while let Some(parent) = cursor {
 			out.push(parent);
 			cursor = self.parent_of(parent);
 		}
-		out
+		Some(out)
 	}
 
 	/// Returns `true` if `needle` occurs anywhere inside the subtree rooted at `root`.
@@ -526,28 +528,36 @@ impl<T> Tree<T> {
 	/// let right = session.split_focus(Axis::X, Slot::B, "right", LeafMeta::default(), None)?;
 	///
 	/// let root = session.tree().root_id().expect("root should exist");
-	/// assert_eq!(session.tree().leaf_ids_dfs(root), vec![left, right]);
+	/// assert_eq!(session.tree().leaf_ids_dfs(root), Some(vec![left, right]));
 	/// # Ok::<(), Box<dyn std::error::Error>>(())
 	/// ```
+	///
+	/// Returns `None` when `root` is not present in the tree.
 	#[must_use]
-	pub fn leaf_ids_dfs(&self, root: NodeId) -> Vec<NodeId> {
+	pub fn leaf_ids_dfs(&self, root: NodeId) -> Option<Vec<NodeId>> {
+		if !self.contains(root) {
+			return None;
+		}
 		let mut out = Vec::new();
 		let _ = self.visit_leaves_dfs(root, &mut |id| {
 			out.push(id);
 			ControlFlow::<()>::Continue(())
 		});
-		out
+		Some(out)
 	}
 
 	/// Returns split ids in subtree postorder, with descendants before ancestors.
 	///
 	/// The subtree root split, if present, is returned last. This order is intended for bottom-up
-	/// teardown and rewrite paths.
+	/// teardown and rewrite paths. Returns `None` when `root` is not present in the tree.
 	#[must_use]
-	pub fn split_ids_postorder(&self, root: NodeId) -> Vec<NodeId> {
+	pub fn split_ids_postorder(&self, root: NodeId) -> Option<Vec<NodeId>> {
+		if !self.contains(root) {
+			return None;
+		}
 		let mut out = Vec::new();
 		self.collect_split_ids(root, &mut out);
-		out
+		Some(out)
 	}
 
 	#[must_use]
@@ -555,6 +565,8 @@ impl<T> Tree<T> {
 		if current == removed {
 			return None;
 		}
+		// If `removed` is somewhere below `current`, detaching it may collapse one level of structure;
+		// callers need the surviving subtree root that will still exist afterward.
 		if !self.contains_in_subtree(current, removed) {
 			Some(current)
 		} else if self.parent_of(removed) == Some(current) {
@@ -599,44 +611,53 @@ impl<T> Tree<T> {
 		Some(())
 	}
 
-	pub(crate) fn set_split_weights(&mut self, id: NodeId, weights: WeightPair) -> Option<()> {
+	pub(crate) fn set_split_weights(&mut self, id: NodeId, weights: WeightPair) -> Option<bool> {
 		let split = self.split_mut(id)?;
-		split.set_weights(weights);
-		Some(())
+		let changed = split.weights() != weights;
+		if changed {
+			split.set_weights(weights);
+		}
+		Some(changed)
 	}
 
-	pub(crate) fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Option<()> {
+	pub(crate) fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Option<bool> {
 		match self.children_of(id) {
 			Some((a, b)) => {
-				self.rebalance_subtree_binary_equal(a)?;
-				self.rebalance_subtree_binary_equal(b)?;
-				self.set_split_weights(id, WeightPair::default())
+				let changed_a = self.rebalance_subtree_binary_equal(a)?;
+				let changed_b = self.rebalance_subtree_binary_equal(b)?;
+				let changed_here = self.set_split_weights(id, WeightPair::default())?;
+				Some(changed_a || changed_b || changed_here)
 			}
-			None => Some(()),
+			None => Some(false),
 		}
 	}
 
-	pub(crate) fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Option<u32> {
+	pub(crate) fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Option<(u32, bool)> {
 		match self.children_of(id) {
 			Some((a, b)) => {
-				let count_a = self.rebalance_subtree_leaf_count(a)?;
-				let count_b = self.rebalance_subtree_leaf_count(b)?;
-				self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
-				Some(count_a + count_b)
+				let (count_a, changed_a) = self.rebalance_subtree_leaf_count(a)?;
+				let (count_b, changed_b) = self.rebalance_subtree_leaf_count(b)?;
+				let changed_here = self.set_split_weights(id, canonicalize_weights(count_a, count_b))?;
+				Some((count_a + count_b, changed_a || changed_b || changed_here))
 			}
-			None => Some(1),
+			None => Some((1, false)),
 		}
 	}
 
-	pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) {
+	pub(crate) fn mirror_subtree_axis(&mut self, id: NodeId, axis: Axis) -> bool {
 		if let Some((a, b)) = self.children_of(id) {
-			self.mirror_subtree_axis(a, axis);
-			self.mirror_subtree_axis(b, axis);
+			let changed_a = self.mirror_subtree_axis(a, axis);
+			let changed_b = self.mirror_subtree_axis(b, axis);
 			let split = self.split_mut(id).expect("split missing during mirror");
 			if split.axis() == axis {
 				split.swap_children();
 				split.swap_weights();
+				true
+			} else {
+				changed_a || changed_b
 			}
+		} else {
+			false
 		}
 	}
 
@@ -695,6 +716,8 @@ impl<T> Tree<T> {
 			self.set_parent(id, None);
 			return;
 		}
+		// Detaching a non-root subtree also removes its former parent, replacing that split with the
+		// detached node's sibling so the remaining tree stays connected and strictly binary.
 		let parent = self.parent_of(id).expect("detached subtree missing parent");
 		let sibling = self.sibling_of(id).expect("detached subtree missing sibling");
 		self.reattach_child(self.parent_of(parent), Some(parent), sibling);

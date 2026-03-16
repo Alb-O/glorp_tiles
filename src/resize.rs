@@ -125,6 +125,8 @@ pub(crate) fn distribute_resize(
 				})
 				.collect::<Vec<_>>();
 			let mut leftover = request - assigned;
+			// Use largest-remainder apportionment after flooring proportional shares; tie-break by
+			// original eligible order to keep the result deterministic.
 			allocations.sort_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
 			for (_, slack, base, _) in &mut allocations {
 				if leftover == 0 {

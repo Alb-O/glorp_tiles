@@ -170,13 +170,17 @@ pub(crate) fn apply_preset_subtree<T>(
 	if tree.is_leaf(selection) {
 		return Ok(None);
 	}
-	let leaves = tree.leaf_ids_dfs(selection);
+	let leaves = tree
+		.leaf_ids_dfs(selection)
+		.expect("validated selection should exist for preset rebuild");
 	if subtree_matches_preset_with_leaves(tree, selection, &leaves, preset) {
 		return Ok(None);
 	}
 
 	let parent = tree.parent_of(selection);
-	let split_ids = tree.split_ids_postorder(selection);
+	let split_ids = tree
+		.split_ids_postorder(selection)
+		.expect("validated selection should exist for preset rebuild");
 
 	for leaf in &leaves {
 		tree.set_parent(*leaf, None);
