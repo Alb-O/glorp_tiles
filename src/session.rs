@@ -31,7 +31,7 @@ use {
 		tree::Tree,
 	},
 	serde::{Deserialize, Serialize},
-	std::collections::HashMap,
+	std::{collections::HashMap, ops::ControlFlow},
 };
 
 /// Rebalancing policy for the currently selected subtree.
@@ -505,13 +505,19 @@ impl<T> Session<T> {
 	}
 
 	fn ensure_leaf_rects_present(&self, snap: &Snapshot) -> Result<(), NavError> {
-		self.tree
-			.root_id()
-			.map(|root| self.tree.leaf_ids_dfs(root))
-			.unwrap_or_default()
-			.into_iter()
-			.find(|id| snap.rect(*id).is_none())
-			.map_or(Ok(()), |id| Err(NavError::MissingSnapshotRect(id)))
+		let Some(root) = self.tree.root_id() else {
+			return Ok(());
+		};
+		match self.tree.visit_leaves_dfs(root, &mut |id| {
+			if snap.rect(id).is_some() {
+				ControlFlow::Continue(())
+			} else {
+				ControlFlow::Break(id)
+			}
+		}) {
+			ControlFlow::Continue(()) => Ok(()),
+			ControlFlow::Break(id) => Err(NavError::MissingSnapshotRect(id)),
+		}
 	}
 
 	fn repair_after_mutation(

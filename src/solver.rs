@@ -202,18 +202,19 @@ pub fn solve_with_revision<T>(
 	tree: &Tree<T>, root: Rect, revision: u64, policy: &SolverPolicy,
 ) -> Result<Snapshot, SolveError> {
 	tree.validate().map_err(SolveError::Validation)?;
+	let node_capacity = tree.node_count();
 	let mut snapshot = Snapshot {
 		revision,
 		root,
-		node_rects: HashMap::new(),
-		split_traces: Vec::new(),
+		node_rects: HashMap::with_capacity(node_capacity),
+		split_traces: Vec::with_capacity(node_capacity.saturating_sub(1)),
 		violations: Vec::new(),
 		strict_feasible: true,
 	};
 	let Some(root_id) = tree.root_id() else {
 		return Ok(snapshot);
 	};
-	let mut summaries = HashMap::new();
+	let mut summaries = HashMap::with_capacity(node_capacity);
 	summarize(tree, root_id, &mut summaries).map_err(SolveError::Validation)?;
 	solve_node(tree, root_id, root, &summaries, policy, &mut snapshot)?;
 	snapshot.strict_feasible = snapshot.violations.is_empty();

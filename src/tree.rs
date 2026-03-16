@@ -29,7 +29,10 @@ use {
 		limits::{LeafMeta, WeightPair, canonicalize_weights},
 	},
 	serde::{Deserialize, Serialize},
-	std::collections::{HashMap, HashSet},
+	std::{
+		collections::{HashMap, HashSet},
+		ops::ControlFlow,
+	},
 };
 
 /// Read-only view of a leaf node inside a [`Tree`].
@@ -221,6 +224,12 @@ impl<T> Tree<T> {
 		ids
 	}
 
+	/// Returns the total number of nodes stored in the tree.
+	#[must_use]
+	pub fn node_count(&self) -> usize {
+		self.nodes.len()
+	}
+
 	/// Returns all split ids sorted by numeric id.
 	///
 	/// This is allocation order, not topology order.
@@ -273,7 +282,7 @@ impl<T> Tree<T> {
 				if root_node.parent().is_some() {
 					return Err(ValidationError::RootHasParent(root));
 				}
-				let mut visited = HashSet::new();
+				let mut visited = HashSet::with_capacity(self.nodes.len());
 				self.validate_node(root, None, &mut visited)?;
 				if let Some(unreachable) = self.nodes.keys().copied().find(|id| !visited.contains(id)) {
 					return Err(ValidationError::Unreachable(unreachable));
@@ -455,23 +464,27 @@ impl<T> Tree<T> {
 	/// A node is considered to be inside its own subtree.
 	#[must_use]
 	pub fn contains_in_subtree(&self, root: NodeId, needle: NodeId) -> bool {
-		if root == needle {
-			return true;
+		if !self.contains(root) || !self.contains(needle) {
+			return false;
 		}
-		match self.nodes.get(&root) {
-			Some(Node::Leaf(_)) | None => false,
-			Some(Node::Split(split)) => {
-				self.contains_in_subtree(split.a, needle) || self.contains_in_subtree(split.b, needle)
+		let mut cursor = Some(needle);
+		while let Some(id) = cursor {
+			if id == root {
+				return true;
 			}
+			cursor = self.parent_of(id);
 		}
+		false
 	}
 
 	/// Returns the first leaf reachable from `id` in depth-first `A`-before-`B` order.
 	#[must_use]
-	pub fn first_leaf(&self, id: NodeId) -> Option<NodeId> {
-		match self.nodes.get(&id)? {
-			Node::Leaf(_) => Some(id),
-			Node::Split(split) => self.first_leaf(split.a).or_else(|| self.first_leaf(split.b)),
+	pub fn first_leaf(&self, mut id: NodeId) -> Option<NodeId> {
+		loop {
+			match self.nodes.get(&id)? {
+				Node::Leaf(_) => return Some(id),
+				Node::Split(split) => id = split.a,
+			}
 		}
 	}
 
@@ -504,7 +517,10 @@ impl<T> Tree<T> {
 	#[must_use]
 	pub fn leaf_ids_dfs(&self, root: NodeId) -> Vec<NodeId> {
 		let mut out = Vec::new();
-		self.collect_leaf_ids(root, &mut out);
+		let _ = self.visit_leaves_dfs(root, &mut |id| {
+			out.push(id);
+			ControlFlow::<()>::Continue(())
+		});
 		out
 	}
 
@@ -524,28 +540,24 @@ impl<T> Tree<T> {
 		if current == removed {
 			return None;
 		}
-		if self.leaf(current).is_some() {
+		if !self.contains_in_subtree(current, removed) {
 			Some(current)
+		} else if self.parent_of(removed) == Some(current) {
+			self.sibling_of(removed)
 		} else {
-			let split = self.split(current)?;
-			match (
-				self.remaining_subtree_after_removal(split.a, removed),
-				self.remaining_subtree_after_removal(split.b, removed),
-			) {
-				(Some(_), Some(_)) => Some(current),
-				(Some(id), None) | (None, Some(id)) => Some(id),
-				(None, None) => None,
-			}
+			Some(current)
 		}
 	}
 
-	fn collect_leaf_ids(&self, id: NodeId, out: &mut Vec<NodeId>) {
-		match self.nodes.get(&id).expect("missing node in collect_leaf_ids") {
-			Node::Leaf(_) => out.push(id),
-			Node::Split(split) => {
-				self.collect_leaf_ids(split.a, out);
-				self.collect_leaf_ids(split.b, out);
-			}
+	pub(crate) fn visit_leaves_dfs<B>(
+		&self, id: NodeId, f: &mut impl FnMut(NodeId) -> ControlFlow<B>,
+	) -> ControlFlow<B> {
+		match self.nodes.get(&id).expect("missing node in visit_leaves_dfs") {
+			Node::Leaf(_) => f(id),
+			Node::Split(split) => match self.visit_leaves_dfs(split.a, f) {
+				ControlFlow::Continue(()) => self.visit_leaves_dfs(split.b, f),
+				ControlFlow::Break(value) => ControlFlow::Break(value),
+			},
 		}
 	}
 

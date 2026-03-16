@@ -4,11 +4,14 @@
 //! the directional half-plane, then are ranked lexicographically by gap and alignment metrics.
 //! Depth-first leaf order provides the final stable tie-break source.
 
-use crate::{
-	geom::{Direction, Rect, orth_gap},
-	ids::NodeId,
-	snapshot::Snapshot,
-	tree::Tree,
+use {
+	crate::{
+		geom::{Direction, Rect, orth_gap},
+		ids::NodeId,
+		snapshot::Snapshot,
+		tree::Tree,
+	},
+	std::ops::ControlFlow,
 };
 
 /// Lexicographic navigation score for one candidate leaf.
@@ -33,16 +36,21 @@ pub struct NavScore {
 pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: Direction) -> Option<NodeId> {
 	let current_rect = snap.rect(current)?;
 	let root = tree.root_id()?;
-	tree.leaf_ids_dfs(root)
-		.into_iter()
-		.enumerate()
-		.filter(|(_, id)| *id != current)
-		.filter_map(|(rank, id)| {
-			snap.rect(id)
+	let mut best = None;
+	let mut rank = 0;
+	let _ = tree.visit_leaves_dfs(root, &mut |id| {
+		if id != current
+			&& let Some((candidate, score)) = snap
+				.rect(id)
 				.and_then(|rect| nav_score(current_rect, rect, dir, rank).map(|score| (id, score)))
-		})
-		.min_by_key(|(_, score)| *score)
-		.map(|(id, _)| id)
+			&& best.is_none_or(|(_, best_score)| score < best_score)
+		{
+			best = Some((candidate, score));
+		}
+		rank += 1;
+		ControlFlow::<()>::Continue(())
+	});
+	best.map(|(id, _)| id)
 }
 
 /// Scores `candidate` as a directional neighbor of `current`.

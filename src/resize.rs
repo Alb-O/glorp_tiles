@@ -88,13 +88,11 @@ pub(crate) fn distribute_resize(
 	match strategy {
 		ResizeStrategy::Local => eligible
 			.first()
-			.map(|entry| amount.min(entry.slack(sign)))
-			.into_iter()
-			.enumerate()
-			.collect(),
+			.map(|entry| vec![(0, amount.min(entry.slack(sign)))])
+			.unwrap_or_default(),
 		ResizeStrategy::AncestorChain => {
 			let mut remaining = amount;
-			let mut out = Vec::new();
+			let mut out = Vec::with_capacity(eligible.len());
 			for (idx, entry) in eligible.iter().enumerate() {
 				if remaining == 0 {
 					break;
@@ -156,38 +154,41 @@ pub(crate) fn eligible_splits<T>(
 ) -> Result<Vec<EligibleSplit>, OpError> {
 	let focus_rect = snap.rect(focus).ok_or(OpError::MissingNode(focus))?;
 	let mut out = Vec::new();
-	for split_id in tree.ancestors_nearest_first(focus) {
+	let mut child_on_path = focus;
+	let mut cursor = tree.parent_of(focus);
+	while let Some(split_id) = cursor {
 		let split = tree.split(split_id).ok_or(OpError::NotSplit(split_id))?;
 		let a_rect = snap.rect(split.a()).ok_or(OpError::MissingNode(split.a()))?;
 		let b_rect = snap.rect(split.b()).ok_or(OpError::MissingNode(split.b()))?;
-		let focus_in_a = tree.contains_in_subtree(split.a(), focus);
+		let focus_in_a = split.a() == child_on_path;
 		let eligible = match dir {
 			Direction::Right => split.axis() == Axis::X && focus_in_a && focus_rect.right() == a_rect.right(),
 			Direction::Left => split.axis() == Axis::X && !focus_in_a && focus_rect.left() == b_rect.left(),
 			Direction::Down => split.axis() == Axis::Y && focus_in_a && focus_rect.bottom() == a_rect.bottom(),
 			Direction::Up => split.axis() == Axis::Y && !focus_in_a && focus_rect.top() == b_rect.top(),
 		};
-		if !eligible {
-			continue;
+		if eligible {
+			let total = a_rect.extent(split.axis()) + b_rect.extent(split.axis());
+			let sum_a = summaries
+				.get(&split.a())
+				.copied()
+				.ok_or(OpError::MissingNode(split.a()))?;
+			let sum_b = summaries
+				.get(&split.b())
+				.copied()
+				.ok_or(OpError::MissingNode(split.b()))?;
+			let (min_a, max_a) = sum_a.axis_limits(split.axis());
+			let (min_b, max_b) = sum_b.axis_limits(split.axis());
+			out.push(EligibleSplit {
+				split: split_id,
+				total,
+				current_a: a_rect.extent(split.axis()),
+				lo: min_a.max(max_b.map_or(0, |max_b| total.saturating_sub(max_b))),
+				hi: total.saturating_sub(min_b).min(max_a.unwrap_or(total)),
+			});
 		}
-		let total = a_rect.extent(split.axis()) + b_rect.extent(split.axis());
-		let sum_a = summaries
-			.get(&split.a())
-			.copied()
-			.ok_or(OpError::MissingNode(split.a()))?;
-		let sum_b = summaries
-			.get(&split.b())
-			.copied()
-			.ok_or(OpError::MissingNode(split.b()))?;
-		let (min_a, max_a) = sum_a.axis_limits(split.axis());
-		let (min_b, max_b) = sum_b.axis_limits(split.axis());
-		out.push(EligibleSplit {
-			split: split_id,
-			total,
-			current_a: a_rect.extent(split.axis()),
-			lo: min_a.max(max_b.map_or(0, |max_b| total.saturating_sub(max_b))),
-			hi: total.saturating_sub(min_b).min(max_a.unwrap_or(total)),
-		});
+		child_on_path = split_id;
+		cursor = split.parent();
 	}
 	Ok(out)
 }
