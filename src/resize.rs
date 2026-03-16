@@ -121,12 +121,12 @@ pub(crate) fn distribute_resize(
 					let base = u32::try_from(product / u128::from(total_slack)).expect("base resize share exceeds u32");
 					let remainder = u32::try_from(product % u128::from(total_slack)).expect("remainder exceeds u32");
 					assigned += base;
-					(idx, entry.split, slack, base.min(slack), remainder)
+					(idx, slack, base.min(slack), remainder)
 				})
 				.collect::<Vec<_>>();
 			let mut leftover = request - assigned;
-			allocations.sort_by_key(|(idx, _, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
-			for (_, _, slack, base, _) in &mut allocations {
+			allocations.sort_by_key(|(idx, _, _, remainder)| (std::cmp::Reverse(*remainder), *idx));
+			for (_, slack, base, _) in &mut allocations {
 				if leftover == 0 {
 					break;
 				}
@@ -138,7 +138,7 @@ pub(crate) fn distribute_resize(
 			allocations.sort_by_key(|(idx, ..)| *idx);
 			allocations
 				.into_iter()
-				.filter_map(|(idx, _, _, base, _)| (base != 0).then_some((idx, base)))
+				.filter_map(|(idx, _, base, _)| (base != 0).then_some((idx, base)))
 				.collect()
 		}
 	}

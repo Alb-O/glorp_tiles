@@ -40,12 +40,11 @@ pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: D
 	let mut rank = 0;
 	let _ = tree.visit_leaves_dfs(root, &mut |id| {
 		if id != current
-			&& let Some((candidate, score)) = snap
-				.rect(id)
-				.and_then(|rect| nav_score(current_rect, rect, dir, rank).map(|score| (id, score)))
+			&& let Some(candidate_rect) = snap.rect(id)
+			&& let Some(score) = nav_score(current_rect, candidate_rect, dir, rank)
 			&& best.is_none_or(|(_, best_score)| score < best_score)
 		{
-			best = Some((candidate, score));
+			best = Some((id, score));
 		}
 		rank += 1;
 		ControlFlow::<()>::Continue(())

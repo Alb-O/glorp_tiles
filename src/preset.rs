@@ -242,16 +242,17 @@ fn build_dwindle<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis, slot: Slo
 	if leaves.is_empty() {
 		return Err(OpError::Empty);
 	}
-	if leaves.len() == 1 {
-		return Ok(leaves[0]);
+	let mut subtree = *leaves.last().expect("empty leaves handled above");
+	let toggled_axis = axis.toggled();
+	for (idx, leaf) in leaves[..leaves.len() - 1].iter().copied().enumerate().rev() {
+		let split_axis = if idx % 2 == 0 { axis } else { toggled_axis };
+		let (a, b) = match slot {
+			Slot::A => (subtree, leaf),
+			Slot::B => (leaf, subtree),
+		};
+		subtree = new_internal_split(tree, split_axis, a, b, WeightPair::default());
 	}
-	let first = leaves[0];
-	let rest = build_dwindle(tree, &leaves[1..], axis.toggled(), slot)?;
-	let (a, b) = match slot {
-		Slot::A => (rest, first),
-		Slot::B => (first, rest),
-	};
-	Ok(new_internal_split(tree, axis, a, b, WeightPair::default()))
+	Ok(subtree)
 }
 
 fn build_tall<T>(tree: &mut Tree<T>, leaves: &[NodeId], preset: TallPreset) -> Result<NodeId, OpError> {
@@ -291,18 +292,12 @@ fn build_equal_linear<T>(tree: &mut Tree<T>, leaves: &[NodeId], axis: Axis) -> R
 	if leaves.is_empty() {
 		return Err(OpError::Empty);
 	}
-	if leaves.len() == 1 {
-		return Ok(leaves[0]);
+	let mut subtree = *leaves.last().expect("empty leaves handled above");
+	for (idx, leaf) in leaves[..leaves.len() - 1].iter().copied().enumerate().rev() {
+		let remaining = leaves.len() - idx - 1;
+		subtree = new_internal_split(tree, axis, leaf, subtree, leaf_count_weights(1, remaining));
 	}
-	let head = leaves[0];
-	let rest = build_equal_linear(tree, &leaves[1..], axis)?;
-	Ok(new_internal_split(
-		tree,
-		axis,
-		head,
-		rest,
-		leaf_count_weights(1, leaves.len() - 1),
-	))
+	Ok(subtree)
 }
 
 fn matches_balanced<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: BalancedPreset) -> bool {

@@ -124,10 +124,21 @@ pub fn choose_extent(
 /// candidate, and returns the deterministic minimum over `(score, tie-break key)`.
 #[must_use]
 pub fn choose_extent_with_score(spec: PairSpec, policy: &SolverPolicy) -> (u32, ScoreTuple) {
-	(0..=spec.total)
-		.map(|a| (a, score(spec, a, policy)))
-		.min_by_key(|(a, score)| (*score, tie_break_key(*a, spec.total, policy.tie_break, score.tie_break)))
-		.expect("total extent search space is never empty")
+	let mut best_a = 0;
+	let mut best_score = score(spec, best_a, policy);
+	let mut best_key = tie_break_key(best_a, spec.total, policy.tie_break, best_score.tie_break);
+
+	for a in 1..=spec.total {
+		let candidate_score = score(spec, a, policy);
+		let candidate_key = tie_break_key(a, spec.total, policy.tie_break, candidate_score.tie_break);
+		if (candidate_score, candidate_key) < (best_score, best_key) {
+			best_a = a;
+			best_score = candidate_score;
+			best_key = candidate_key;
+		}
+	}
+
+	(best_a, best_score)
 }
 
 fn tie_break_key(a: u32, total: u32, mode: TieBreakMode, fallback: u128) -> u128 {
@@ -216,7 +227,7 @@ pub fn solve_with_revision<T>(
 	};
 	let mut summaries = HashMap::with_capacity(node_capacity);
 	summarize(tree, root_id, &mut summaries).map_err(SolveError::Validation)?;
-	solve_node(tree, root_id, root, &summaries, policy, &mut snapshot)?;
+	solve_node(tree, root_id, root, &summaries, *policy, &mut snapshot)?;
 	snapshot.strict_feasible = snapshot.violations.is_empty();
 	Ok(snapshot)
 }
@@ -354,7 +365,7 @@ fn min_option(a: Option<u32>, b: Option<u32>) -> Option<u32> {
 }
 
 fn solve_node<T>(
-	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, Summary>, policy: &SolverPolicy,
+	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, Summary>, policy: SolverPolicy,
 	out: &mut Snapshot,
 ) -> Result<(), SolveError> {
 	out.node_rects.insert(id, rect);
@@ -387,7 +398,7 @@ fn solve_node<T>(
 			sa: sum_a.shrink_cost,
 			sb: sum_b.shrink_cost,
 		};
-		let (chosen_a, chosen_score) = choose_extent_with_score(spec, policy);
+		let (chosen_a, chosen_score) = choose_extent_with_score(spec, &policy);
 		let (rect_a, rect_b) = rect.split(axis, chosen_a);
 		out.split_traces.push(SplitTrace {
 			split: id,

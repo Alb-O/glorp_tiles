@@ -44,14 +44,22 @@ pub fn meta(min_w: u32, min_h: u32, max_w: Option<u32>, max_h: Option<u32>, shri
 	}
 }
 
-pub fn choose_extent_oracle(spec: PairSpec, policy: &SolverPolicy) -> (u32, ScoreTuple) {
-	(0..=spec.total)
-		.map(|a| (a, oracle_score(spec, policy, a)))
-		.min_by_key(|(_, score)| *score)
-		.expect("oracle search space is never empty")
+pub fn choose_extent_oracle(spec: PairSpec, policy: SolverPolicy) -> (u32, ScoreTuple) {
+	let mut best_a = 0;
+	let mut best_score = oracle_score(spec, policy, best_a);
+
+	for a in 1..=spec.total {
+		let candidate = oracle_score(spec, policy, a);
+		if candidate < best_score {
+			best_a = a;
+			best_score = candidate;
+		}
+	}
+
+	(best_a, best_score)
 }
 
-fn oracle_score(spec: PairSpec, policy: &SolverPolicy, a: u32) -> ScoreTuple {
+fn oracle_score(spec: PairSpec, policy: SolverPolicy, a: u32) -> ScoreTuple {
 	let size_b = spec.total - a;
 	let short_a = u128::from(spec.min_a.saturating_sub(a));
 	let short_b = u128::from(spec.min_b.saturating_sub(size_b));
@@ -111,19 +119,19 @@ pub fn best_neighbor_oracle<T>(
 ) -> Option<NodeId> {
 	let current_rect = snap.rect(current)?;
 	let order = leaf_ids(session);
+	let mut best = None;
 
-	order
-		.iter()
-		.enumerate()
-		.filter_map(|(rank, id)| {
-			(*id != current).then(|| {
-				snap.rect(*id).and_then(|candidate| {
-					nav_score_oracle(current_rect, candidate, dir, rank).map(|score| (*id, score))
-				})
-			})?
-		})
-		.min_by_key(|(_, score)| *score)
-		.map(|(id, _)| id)
+	for (rank, id) in order.into_iter().enumerate() {
+		if id != current
+			&& let Some(candidate) = snap.rect(id)
+			&& let Some(score) = nav_score_oracle(current_rect, candidate, dir, rank)
+			&& best.is_none_or(|(_, best_score)| score < best_score)
+		{
+			best = Some((id, score));
+		}
+	}
+
+	best.map(|(id, _)| id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +202,7 @@ pub fn eligible_splits_oracle<T>(
 		.collect()
 }
 
-pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: &SolverPolicy) -> glorp_tiles::Snapshot {
+pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: SolverPolicy) -> glorp_tiles::Snapshot {
 	let mut summaries = HashMap::new();
 	let mut snapshot = glorp_tiles::Snapshot {
 		revision,
@@ -214,7 +222,7 @@ pub fn solve_reference<T>(tree: &Tree<T>, revision: u64, root: Rect, policy: &So
 }
 
 fn solve_reference_node<T>(
-	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, RefSummary>, policy: &SolverPolicy,
+	tree: &Tree<T>, id: NodeId, rect: Rect, summaries: &HashMap<NodeId, RefSummary>, policy: SolverPolicy,
 	out: &mut glorp_tiles::Snapshot,
 ) {
 	out.node_rects.insert(id, rect);
@@ -361,7 +369,7 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 		.insert_root(0, LeafMeta::default())
 		.expect("root insert should work");
 	let mut next_payload = 1_u16;
-	for byte in bytes {
+	for &byte in bytes {
 		let leaves = leaf_ids(&session);
 		let splits = split_ids(&session);
 		let nodes = session.tree().node_ids();
@@ -375,24 +383,24 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 				next_payload += 1;
 			}
 			2 if leaves.len() > 1 => {
-				let leaf = leaves[usize::from(*byte) % leaves.len()];
+				let leaf = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(leaf);
 				let _ = session.remove_focus();
 			}
 			3 if !splits.is_empty() => {
-				let split = splits[usize::from(*byte) % splits.len()];
+				let split = splits[usize::from(byte) % splits.len()];
 				if prepare_selected_split(&mut session, split) {
 					let _ = session.toggle_axis();
 				}
 			}
 			4 if !splits.is_empty() => {
-				let split = splits[usize::from(*byte) % splits.len()];
+				let split = splits[usize::from(byte) % splits.len()];
 				if prepare_selected_split(&mut session, split) {
 					let _ = session.mirror_selection(axis(byte));
 				}
 			}
 			5 if !splits.is_empty() => {
-				let split = splits[usize::from(*byte) % splits.len()];
+				let split = splits[usize::from(byte) % splits.len()];
 				if prepare_selected_split(&mut session, split) {
 					let mode = if byte & 1 == 0 {
 						RebalanceMode::BinaryEqual
@@ -403,7 +411,7 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 				}
 			}
 			6 if !splits.is_empty() => {
-				let split = splits[usize::from(*byte) % splits.len()];
+				let split = splits[usize::from(byte) % splits.len()];
 				if prepare_selected_split(&mut session, split) {
 					let preset = match byte & 0b11 {
 						0 => PresetKind::Balanced(BalancedPreset {
@@ -427,22 +435,22 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 				}
 			}
 			7 if leaves.len() > 1 => {
-				let focus = leaves[usize::from(*byte) % leaves.len()];
+				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
 				let snap = session.solve(root_rect(9, 7), &SolverPolicy::default());
 				let _ = session.focus_dir(direction(byte), &snap);
 			}
 			8 if leaves.len() > 1 => {
-				let focus = leaves[usize::from(*byte) % leaves.len()];
+				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
 				let snap = session.solve(root_rect(11, 9), &SolverPolicy::default());
-				let _ = session.grow_focus(direction(byte), 2 + u32::from(*byte & 0b11), strategy(byte), &snap);
+				let _ = session.grow_focus(direction(byte), 2 + u32::from(byte & 0b11), strategy(byte), &snap);
 			}
 			9 if leaves.len() > 1 => {
-				let focus = leaves[usize::from(*byte) % leaves.len()];
+				let focus = leaves[usize::from(byte) % leaves.len()];
 				let _ = session.set_selection(focus);
 				let snap = session.solve(root_rect(11, 9), &SolverPolicy::default());
-				let _ = session.shrink_focus(direction(byte), 1 + u32::from(*byte & 0b11), strategy(byte), &snap);
+				let _ = session.shrink_focus(direction(byte), 1 + u32::from(byte & 0b11), strategy(byte), &snap);
 			}
 			10 if nodes.len() > 1 => {
 				if let Some((a, b)) = first_disjoint_pair(&session, &nodes) {
@@ -450,13 +458,13 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 				}
 			}
 			11 if nodes.len() > 1 && !splits.is_empty() => {
-				let split = splits[usize::from(*byte) % splits.len()];
+				let split = splits[usize::from(byte) % splits.len()];
 				let targets = nodes
 					.iter()
 					.copied()
 					.filter(|target| *target != split)
 					.collect::<Vec<_>>();
-				if let Some(target) = targets.get(usize::from(*byte) % targets.len()) {
+				if let Some(target) = targets.get(usize::from(byte) % targets.len()) {
 					let _ = prepare_selected_split(&mut session, split);
 					let _ = session.move_selection_as_sibling_of(*target, axis(byte), slot(byte));
 				}
@@ -536,15 +544,15 @@ fn orth_gap_oracle(a_start: i32, a_end: i32, b_start: i32, b_end: i32) -> u32 {
 	}
 }
 
-pub fn axis(byte: &u8) -> Axis {
+pub fn axis(byte: u8) -> Axis {
 	if byte & 1 == 0 { Axis::X } else { Axis::Y }
 }
 
-pub fn slot(byte: &u8) -> Slot {
+pub fn slot(byte: u8) -> Slot {
 	if byte & 2 == 0 { Slot::A } else { Slot::B }
 }
 
-pub fn direction(byte: &u8) -> Direction {
+pub fn direction(byte: u8) -> Direction {
 	match byte & 0b11 {
 		0 => Direction::Left,
 		1 => Direction::Right,
@@ -553,7 +561,7 @@ pub fn direction(byte: &u8) -> Direction {
 	}
 }
 
-pub fn strategy(byte: &u8) -> ResizeStrategy {
+pub fn strategy(byte: u8) -> ResizeStrategy {
 	match byte % 3 {
 		0 => ResizeStrategy::Local,
 		1 => ResizeStrategy::AncestorChain,

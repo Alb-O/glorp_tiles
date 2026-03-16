@@ -69,7 +69,7 @@ proptest! {
 			sb,
 		};
 		let policy = stressed_policy(seed);
-		let expected = choose_extent_oracle(spec, &policy);
+		let expected = choose_extent_oracle(spec, policy);
 		let actual = choose_extent_with_score(spec, &policy);
 		prop_assert_eq!(actual, expected);
 	}
@@ -80,7 +80,7 @@ proptest! {
 		let root = root_rect(w, h);
 		let policy = stressed_policy(seed);
 		let production = session.solve(root, &policy);
-		let reference = solve_reference(session.tree(), session.revision(), root, &policy);
+		let reference = solve_reference(session.tree(), session.revision(), root, policy);
 		prop_assert_eq!(&production.node_rects, &reference.node_rects);
 		prop_assert_eq!(&production.violations, &reference.violations);
 		prop_assert_eq!(production.strict_feasible, reference.strict_feasible);
@@ -99,8 +99,8 @@ proptest! {
 		let policy = stressed_policy(seed);
 
 		prop_assert_eq!(
-			solve_reference(session.tree(), session.revision(), root, &policy),
-			solve_reference(session.tree(), session.revision(), root, &policy),
+			solve_reference(session.tree(), session.revision(), root, policy),
+			solve_reference(session.tree(), session.revision(), root, policy),
 		);
 	}
 }
@@ -115,9 +115,7 @@ fn summary_matches_bruteforce_feasibility_envelope() {
 
 	let strict_pairs = (0_u32..=20)
 		.flat_map(|w| (0_u32..=20).map(move |h| (w, h)))
-		.filter(|(w, h)| {
-			solve_reference(session.tree(), session.revision(), root_rect(*w, *h), &policy).strict_feasible
-		})
+		.filter(|(w, h)| solve_reference(session.tree(), session.revision(), root_rect(*w, *h), policy).strict_feasible)
 		.collect::<Vec<_>>();
 
 	let min_w = strict_pairs
