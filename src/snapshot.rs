@@ -148,13 +148,23 @@ impl PartialEq for Snapshot {
 	fn eq(&self, other: &Self) -> bool {
 		// Ownership is intentionally excluded so equality stays about solved geometry/diagnostics,
 		// not which live session instance produced the snapshot.
-		self.revision == other.revision
-			&& self.root == other.root
-			&& self.tree_fingerprint == other.tree_fingerprint
-			&& self.node_rects == other.node_rects
-			&& self.split_traces == other.split_traces
-			&& self.violations == other.violations
-			&& self.strict_feasible == other.strict_feasible
+		(
+			self.revision,
+			self.root,
+			self.tree_fingerprint,
+			&self.node_rects,
+			&self.split_traces,
+			&self.violations,
+			self.strict_feasible,
+		) == (
+			other.revision,
+			other.root,
+			other.tree_fingerprint,
+			&other.node_rects,
+			&other.split_traces,
+			&other.violations,
+			other.strict_feasible,
+		)
 	}
 }
 

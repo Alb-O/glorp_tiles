@@ -350,12 +350,7 @@ pub fn solve_with_revision<T>(
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn solve_strict<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Result<Snapshot, SolveError> {
-	let snapshot = solve(tree, root, policy)?;
-	if snapshot.strict_feasible() {
-		Ok(snapshot)
-	} else {
-		Err(SolveError::Infeasible)
-	}
+	strict_snapshot(solve(tree, root, policy)?)
 }
 
 /// Strict solve variant that tags the returned snapshot with `revision`.
@@ -364,12 +359,14 @@ pub fn solve_strict<T>(tree: &Tree<T>, root: Rect, policy: &SolverPolicy) -> Res
 pub fn solve_strict_with_revision<T>(
 	tree: &Tree<T>, root: Rect, revision: u64, policy: &SolverPolicy,
 ) -> Result<Snapshot, SolveError> {
-	let snapshot = solve_with_revision(tree, root, revision, policy)?;
-	if snapshot.strict_feasible() {
-		Ok(snapshot)
-	} else {
-		Err(SolveError::Infeasible)
-	}
+	strict_snapshot(solve_with_revision(tree, root, revision, policy)?)
+}
+
+fn strict_snapshot(snapshot: Snapshot) -> Result<Snapshot, SolveError> {
+	snapshot
+		.strict_feasible()
+		.then_some(snapshot)
+		.ok_or(SolveError::Infeasible)
 }
 
 /// Computes the exact bottom-up summary envelope for the subtree rooted at `id`.

@@ -4,6 +4,7 @@ use {
 	glorp_tiles::{
 		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PairSpec, PresetKind, RebalanceMode, Rect, ResizeStrategy,
 		ScoreTuple, Session, ShortageMode, SizeLimits, Slot, SolverPolicy, TallPreset, TieBreakMode, Tree, WidePreset,
+		geom::orth_gap,
 	},
 	std::collections::{BTreeMap, HashMap},
 };
@@ -505,7 +506,7 @@ pub fn exercise_trace(bytes: &[u8]) -> Session<u16> {
 	session
 }
 
-fn first_disjoint_pair<T>(session: &Session<T>, nodes: &[NodeId]) -> Option<(NodeId, NodeId)> {
+pub fn first_disjoint_pair<T>(session: &Session<T>, nodes: &[NodeId]) -> Option<(NodeId, NodeId)> {
 	for (idx, a) in nodes.iter().enumerate() {
 		for b in nodes.iter().skip(idx + 1) {
 			if !session.tree().contains_in_subtree(*a, *b) && !session.tree().contains_in_subtree(*b, *a) {
@@ -529,7 +530,7 @@ fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize)
 		Direction::Left => (
 			candidate.right() <= current.left(),
 			u32::try_from(current.left() - candidate.right()).ok()?,
-			orth_gap_oracle(current.top(), current.bottom(), candidate.top(), candidate.bottom()),
+			orth_gap(current.top(), current.bottom(), candidate.top(), candidate.bottom()),
 			current
 				.center_twice_orth(Axis::X)
 				.abs_diff(candidate.center_twice_orth(Axis::X)),
@@ -537,7 +538,7 @@ fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize)
 		Direction::Right => (
 			candidate.left() >= current.right(),
 			u32::try_from(candidate.left() - current.right()).ok()?,
-			orth_gap_oracle(current.top(), current.bottom(), candidate.top(), candidate.bottom()),
+			orth_gap(current.top(), current.bottom(), candidate.top(), candidate.bottom()),
 			current
 				.center_twice_orth(Axis::X)
 				.abs_diff(candidate.center_twice_orth(Axis::X)),
@@ -545,7 +546,7 @@ fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize)
 		Direction::Up => (
 			candidate.bottom() <= current.top(),
 			u32::try_from(current.top() - candidate.bottom()).ok()?,
-			orth_gap_oracle(current.left(), current.right(), candidate.left(), candidate.right()),
+			orth_gap(current.left(), current.right(), candidate.left(), candidate.right()),
 			current
 				.center_twice_orth(Axis::Y)
 				.abs_diff(candidate.center_twice_orth(Axis::Y)),
@@ -553,7 +554,7 @@ fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize)
 		Direction::Down => (
 			candidate.top() >= current.bottom(),
 			u32::try_from(candidate.top() - current.bottom()).ok()?,
-			orth_gap_oracle(current.left(), current.right(), candidate.left(), candidate.right()),
+			orth_gap(current.left(), current.right(), candidate.left(), candidate.right()),
 			current
 				.center_twice_orth(Axis::Y)
 				.abs_diff(candidate.center_twice_orth(Axis::Y)),
@@ -561,16 +562,6 @@ fn nav_score_oracle(current: Rect, candidate: Rect, dir: Direction, rank: usize)
 	};
 
 	eligible.then_some((primary_gap, orth_gap, orth_center_delta, rank))
-}
-
-fn orth_gap_oracle(a_start: i32, a_end: i32, b_start: i32, b_end: i32) -> u32 {
-	if a_end <= b_start {
-		u32::try_from(b_start - a_end).expect("gap should fit u32")
-	} else if b_end <= a_start {
-		u32::try_from(a_start - b_end).expect("gap should fit u32")
-	} else {
-		0
-	}
 }
 
 pub fn axis(byte: u8) -> Axis {

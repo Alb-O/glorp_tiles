@@ -176,20 +176,15 @@ impl<T> Session<T> {
 	/// ```
 	pub fn from_tree(tree: Tree<T>) -> Result<Self, ValidationError> {
 		tree.validate()?;
-		let (focus, selection) = match tree.root_id() {
-			Some(root) => {
-				// Reuse the crate's canonical leaf order so Tree -> Session bridging stays stable.
-				let focus = tree
-					.first_leaf(root)
-					.expect("validated non-empty tree should contain a leaf");
-				(Some(focus), Some(focus))
-			}
-			None => (None, None),
-		};
+		let focus = tree.root_id().map(|root| {
+			// Reuse the crate's canonical leaf order so Tree -> Session bridging stays stable.
+			tree.first_leaf(root)
+				.expect("validated non-empty tree should contain a leaf")
+		});
 		Ok(Self {
 			tree,
 			focus,
-			selection,
+			selection: focus,
 			revision: 0,
 			owner: SessionOwner::fresh(),
 		})
@@ -248,11 +243,9 @@ impl<T> Session<T> {
 
 	fn validate_targeting(&self) -> Result<(), ValidationError> {
 		if self.tree.root_id().is_none() {
-			return if self.focus.is_none() && self.selection.is_none() {
-				Ok(())
-			} else {
-				Err(ValidationError::EmptyStateInconsistent)
-			};
+			return (self.focus.is_none() && self.selection.is_none())
+				.then_some(())
+				.ok_or(ValidationError::EmptyStateInconsistent);
 		}
 
 		let focus = self.focus.ok_or(ValidationError::EmptyStateInconsistent)?;
@@ -260,11 +253,9 @@ impl<T> Session<T> {
 			return Err(ValidationError::NonLeafFocus(focus));
 		}
 		let selection = self.selection.ok_or(ValidationError::EmptyStateInconsistent)?;
-		if self.selection_contains_focus(selection, focus) {
-			Ok(())
-		} else {
-			Err(ValidationError::InvalidSelection(selection))
-		}
+		self.selection_contains_focus(selection, focus)
+			.then_some(())
+			.ok_or(ValidationError::InvalidSelection(selection))
 	}
 
 	/// Solves the current tree into a snapshot tagged with the current revision and session owner.
@@ -360,14 +351,13 @@ impl<T> Session<T> {
 		self.require_node(id)?;
 		if self.tree.is_leaf(id) {
 			self.focus = Some(id);
-			self.selection = Some(id);
 		} else {
 			let focus = self.require_focus_leaf()?;
 			if !self.selection_contains_focus(id, focus) {
 				return Err(OpError::Validation(ValidationError::InvalidSelection(id)));
 			}
-			self.selection = Some(id);
 		}
+		self.selection = Some(id);
 		debug_assert!(self.validate_targeting().is_ok());
 		Ok(())
 	}
@@ -621,17 +611,14 @@ impl<T> Session<T> {
 	fn repair_after_mutation(
 		&mut self, old_focus: NodeId, old_selection: Option<NodeId>, replacement_site: Option<NodeId>,
 	) {
-		let root = self.tree.root_id();
-		self.focus = if root.is_none() {
-			None
-		} else if self.tree.is_leaf(old_focus) {
+		self.focus = self.tree.root_id().and_then(|_| {
 			// Most mutations preserve the focused leaf id, so keep it when it still exists instead of
 			// retargeting through tree order.
-			Some(old_focus)
-		} else {
-			replacement_site.and_then(|id| self.tree.first_leaf(id))
-		};
-
+			self.tree
+				.is_leaf(old_focus)
+				.then_some(old_focus)
+				.or_else(|| replacement_site.and_then(|id| self.tree.first_leaf(id)))
+		});
 		self.selection = self.focus.map(|focus| self.selection_for_focus(focus, old_selection));
 	}
 

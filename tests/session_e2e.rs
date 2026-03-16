@@ -1,7 +1,7 @@
 mod common;
 
 use {
-	common::{assert_partition, exercise_trace, leaf_ids, meta, root_rect, split_ids},
+	common::{assert_partition, exercise_trace, first_disjoint_pair, leaf_ids, meta, root_rect, split_ids},
 	glorp_tiles::{
 		Axis, BalancedPreset, Direction, LeafMeta, NodeId, PresetKind, RebalanceMode, ResizeStrategy, Session, Slot,
 		SolverPolicy, TallPreset, WeightPair, WidePreset,
@@ -99,16 +99,7 @@ fn mirror_swap_and_move_round_trip_behaviors_hold() {
 	assert_eq!(session.tree(), original.tree());
 
 	let nodes = session.tree().node_ids();
-	let (a, b) = nodes
-		.iter()
-		.enumerate()
-		.find_map(|(idx, a)| {
-			nodes.iter().skip(idx + 1).find_map(|b| {
-				(!session.tree().contains_in_subtree(*a, *b) && !session.tree().contains_in_subtree(*b, *a))
-					.then_some((*a, *b))
-			})
-		})
-		.expect("need a disjoint swap pair");
+	let (a, b) = first_disjoint_pair(&session, &nodes).expect("need a disjoint swap pair");
 	session.swap_nodes(a, b).expect("first swap");
 	session.swap_nodes(a, b).expect("second swap");
 	assert_eq!(session.tree(), original.tree());

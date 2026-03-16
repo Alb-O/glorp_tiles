@@ -53,14 +53,6 @@ pub enum ValidationError {
 	EmptyStateInconsistent,
 }
 
-impl Display for ValidationError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{self:?}")
-	}
-}
-
-impl std::error::Error for ValidationError {}
-
 /// Failure returned by direct solve entry points.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveError {
@@ -69,14 +61,6 @@ pub enum SolveError {
 	/// Strict solving was requested but no hard-limit-feasible layout exists.
 	Infeasible,
 }
-
-impl Display for SolveError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{self:?}")
-	}
-}
-
-impl std::error::Error for SolveError {}
 
 /// Failure returned by low-level neighbor lookup on a solved tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,14 +81,6 @@ pub enum NeighborError {
 	MissingSnapshotRect(NodeId),
 }
 
-impl Display for NeighborError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{self:?}")
-	}
-}
-
-impl std::error::Error for NeighborError {}
-
 /// Failure returned by geometry-based focus navigation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavError {
@@ -121,14 +97,6 @@ pub enum NavError {
 	/// The underlying session state failed validation.
 	Validation(ValidationError),
 }
-
-impl Display for NavError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{self:?}")
-	}
-}
-
-impl std::error::Error for NavError {}
 
 /// Failure returned by structural or geometry-driven session mutation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,10 +131,18 @@ pub enum OpError {
 	Validation(ValidationError),
 }
 
-impl Display for OpError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{self:?}")
-	}
+macro_rules! impl_debug_display_error {
+	($($ty:ty),+ $(,)?) => {
+		$(
+			impl Display for $ty {
+				fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+					write!(f, "{self:?}")
+				}
+			}
+
+			impl std::error::Error for $ty {}
+		)+
+	};
 }
 
-impl std::error::Error for OpError {}
+impl_debug_display_error!(ValidationError, SolveError, NeighborError, NavError, OpError);

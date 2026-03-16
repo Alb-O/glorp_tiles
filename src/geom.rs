@@ -123,34 +123,22 @@ impl Rect {
 			Axis::X => {
 				let right_x = self.x + i32::try_from(lead_extent).expect("lead extent exceeds i32");
 				(
-					Self {
-						x: self.x,
-						y: self.y,
-						w: lead_extent,
-						h: self.h,
-					},
+					Self { w: lead_extent, ..self },
 					Self {
 						x: right_x,
-						y: self.y,
 						w: self.w.saturating_sub(lead_extent),
-						h: self.h,
+						..self
 					},
 				)
 			}
 			Axis::Y => {
 				let bottom_y = self.y + i32::try_from(lead_extent).expect("lead extent exceeds i32");
 				(
+					Self { h: lead_extent, ..self },
 					Self {
-						x: self.x,
-						y: self.y,
-						w: self.w,
-						h: lead_extent,
-					},
-					Self {
-						x: self.x,
 						y: bottom_y,
-						w: self.w,
 						h: self.h.saturating_sub(lead_extent),
+						..self
 					},
 				)
 			}
@@ -170,15 +158,11 @@ impl Rect {
 		match axis {
 			Axis::X => Self {
 				x: root.right() - i32::try_from(self.w).expect("rect width exceeds i32") - (self.x - root.left()),
-				y: self.y,
-				w: self.w,
-				h: self.h,
+				..self
 			},
 			Axis::Y => Self {
-				x: self.x,
 				y: root.bottom() - i32::try_from(self.h).expect("rect height exceeds i32") - (self.y - root.top()),
-				w: self.w,
-				h: self.h,
+				..self
 			},
 		}
 	}

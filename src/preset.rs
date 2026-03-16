@@ -340,18 +340,11 @@ fn matches_dwindle<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], axis: Axis,
 	if split.axis() != axis || split.weights() != WeightPair::default() {
 		return false;
 	}
-	match slot {
-		Slot::A => {
-			split.b() == leaves[0]
-				&& tree.is_leaf(split.b())
-				&& matches_dwindle(tree, split.a(), &leaves[1..], axis.toggled(), slot)
-		}
-		Slot::B => {
-			split.a() == leaves[0]
-				&& tree.is_leaf(split.a())
-				&& matches_dwindle(tree, split.b(), &leaves[1..], axis.toggled(), slot)
-		}
-	}
+	let (leaf, subtree) = match slot {
+		Slot::A => (split.b(), split.a()),
+		Slot::B => (split.a(), split.b()),
+	};
+	leaf == leaves[0] && tree.is_leaf(leaf) && matches_dwindle(tree, subtree, &leaves[1..], axis.toggled(), slot)
 }
 
 fn matches_tall<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], preset: TallPreset) -> bool {
@@ -394,18 +387,11 @@ fn matches_master_stack<T>(
 	if split.axis() != root_axis || split.weights() != root_weights {
 		return false;
 	}
-	match master_slot {
-		Slot::A => {
-			split.a() == leaves[0]
-				&& tree.is_leaf(split.a())
-				&& matches_equal_linear(tree, split.b(), &leaves[1..], stack_axis)
-		}
-		Slot::B => {
-			split.b() == leaves[0]
-				&& tree.is_leaf(split.b())
-				&& matches_equal_linear(tree, split.a(), &leaves[1..], stack_axis)
-		}
-	}
+	let (master, stack) = match master_slot {
+		Slot::A => (split.a(), split.b()),
+		Slot::B => (split.b(), split.a()),
+	};
+	master == leaves[0] && tree.is_leaf(master) && matches_equal_linear(tree, stack, &leaves[1..], stack_axis)
 }
 
 fn matches_equal_linear<T>(tree: &Tree<T>, id: NodeId, leaves: &[NodeId], axis: Axis) -> bool {

@@ -475,10 +475,11 @@ impl<T> Tree<T> {
 	pub fn split_leaf(
 		&mut self, leaf: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
-		match self.nodes.get(&leaf) {
-			Some(Node::Leaf(_)) => {}
-			Some(Node::Split(_)) => return Err(OpError::NotLeaf(leaf)),
-			None => return Err(OpError::MissingNode(leaf)),
+		if !self.contains(leaf) {
+			return Err(OpError::MissingNode(leaf));
+		}
+		if !self.is_leaf(leaf) {
+			return Err(OpError::NotLeaf(leaf));
 		}
 		validate_leaf_meta(&meta)?;
 		let weights = weights.unwrap_or_default().checked().ok_or(OpError::InvalidWeights)?;
@@ -495,7 +496,7 @@ impl<T> Tree<T> {
 	pub fn wrap_node(
 		&mut self, target: NodeId, axis: Axis, slot: Slot, payload: T, meta: LeafMeta, weights: Option<WeightPair>,
 	) -> Result<NodeId, OpError> {
-		if !self.nodes.contains_key(&target) {
+		if !self.contains(target) {
 			return Err(OpError::MissingNode(target));
 		}
 		validate_leaf_meta(&meta)?;
@@ -511,10 +512,11 @@ impl<T> Tree<T> {
 	/// Returns the surviving replacement site, or `None` when the tree becomes empty. Removing the
 	/// only root leaf empties the tree.
 	pub fn remove_leaf(&mut self, leaf: NodeId) -> Result<Option<NodeId>, OpError> {
-		match self.nodes.get(&leaf) {
-			Some(Node::Leaf(_)) => {}
-			Some(Node::Split(_)) => return Err(OpError::NotLeaf(leaf)),
-			None => return Err(OpError::MissingNode(leaf)),
+		if !self.contains(leaf) {
+			return Err(OpError::MissingNode(leaf));
+		}
+		if !self.is_leaf(leaf) {
+			return Err(OpError::NotLeaf(leaf));
 		}
 		// The internal helper only fails for missing/non-leaf ids, which we've ruled out above.
 		let removed = self
@@ -801,6 +803,14 @@ impl<T> Tree<T> {
 		}
 	}
 
+	fn split_root_error(&self, id: NodeId) -> OpError {
+		if self.contains(id) {
+			OpError::NotSplit(id)
+		} else {
+			OpError::MissingNode(id)
+		}
+	}
+
 	fn collect_parent_chain(&self, id: NodeId, include_self: bool) -> Option<Vec<NodeId>> {
 		if !self.contains(id) {
 			return None;
@@ -890,13 +900,9 @@ impl<T> Tree<T> {
 	///
 	/// Returns `true` when any split weights changed. Leaf roots return [`OpError::NotSplit`].
 	pub fn rebalance_subtree_binary_equal(&mut self, id: NodeId) -> Result<bool, OpError> {
-		let changed = self.rebalance_subtree_binary_equal_inner(id).ok_or_else(|| {
-			if self.contains(id) {
-				OpError::NotSplit(id)
-			} else {
-				OpError::MissingNode(id)
-			}
-		})?;
+		let changed = self
+			.rebalance_subtree_binary_equal_inner(id)
+			.ok_or_else(|| self.split_root_error(id))?;
 		if changed {
 			self.validate().map_err(OpError::Validation)?;
 		}
@@ -909,13 +915,7 @@ impl<T> Tree<T> {
 	pub fn rebalance_subtree_leaf_count(&mut self, id: NodeId) -> Result<bool, OpError> {
 		let changed = self
 			.rebalance_subtree_leaf_count_inner(id)
-			.ok_or_else(|| {
-				if self.contains(id) {
-					OpError::NotSplit(id)
-				} else {
-					OpError::MissingNode(id)
-				}
-			})?
+			.ok_or_else(|| self.split_root_error(id))?
 			.1;
 		if changed {
 			self.validate().map_err(OpError::Validation)?;
