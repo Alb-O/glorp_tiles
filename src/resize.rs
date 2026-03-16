@@ -84,23 +84,24 @@ pub(crate) fn resize_sign(dir: Direction, outward: bool) -> i8 {
 ///   order in the output.
 pub(crate) fn distribute_resize(
 	amount: u32, strategy: ResizeStrategy, sign: i8, eligible: &[EligibleSplit],
-) -> Vec<(NodeId, u32)> {
+) -> Vec<(usize, u32)> {
 	match strategy {
 		ResizeStrategy::Local => eligible
 			.first()
-			.map(|entry| (entry.split, amount.min(entry.slack(sign))))
+			.map(|entry| amount.min(entry.slack(sign)))
 			.into_iter()
+			.enumerate()
 			.collect(),
 		ResizeStrategy::AncestorChain => {
 			let mut remaining = amount;
 			let mut out = Vec::new();
-			for entry in eligible {
+			for (idx, entry) in eligible.iter().enumerate() {
 				if remaining == 0 {
 					break;
 				}
 				let delta = remaining.min(entry.slack(sign));
 				if delta != 0 {
-					out.push((entry.split, delta));
+					out.push((idx, delta));
 					remaining -= delta;
 				}
 			}
@@ -139,7 +140,7 @@ pub(crate) fn distribute_resize(
 			allocations.sort_by_key(|(idx, ..)| *idx);
 			allocations
 				.into_iter()
-				.filter_map(|(_, split, _, base, _)| (base != 0).then_some((split, base)))
+				.filter_map(|(idx, _, _, base, _)| (base != 0).then_some((idx, base)))
 				.collect()
 		}
 	}

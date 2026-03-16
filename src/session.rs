@@ -352,8 +352,8 @@ impl<T> Session<T> {
 		self.ensure_fresh_snapshot(snap)
 			.map_err(|error| map_op_to_nav(error).expect("focus_dir should only map nav-compatible op errors"))?;
 		let focus = self.focus.ok_or(NavError::Empty)?;
-		let leaf_rects = self.leaf_rects_from_snapshot(snap)?;
-		let next = best_neighbor(&self.tree, &leaf_rects, focus, dir).ok_or(NavError::NoCandidate)?;
+		self.ensure_leaf_rects_present(snap)?;
+		let next = best_neighbor(&self.tree, snap, focus, dir).ok_or(NavError::NoCandidate)?;
 		self.focus = Some(next);
 		self.repair_selection_for_current_focus();
 		self.validate().map_err(NavError::Validation)
@@ -482,14 +482,13 @@ impl<T> Session<T> {
 		}
 		let sign = resize_sign(dir, outward);
 		let allocations = distribute_resize(amount, strategy, sign, &eligible);
-		for (split_id, delta) in allocations {
+		for (eligible_idx, delta) in allocations {
 			if delta == 0 {
 				continue;
 			}
 			let info = eligible
-				.iter()
-				.find(|entry| entry.split == split_id)
-				.expect("eligible split missing during resize");
+				.get(eligible_idx)
+				.expect("eligible split index should come from distribute_resize");
 			let new_a = if sign > 0 {
 				info.current_a + delta
 			} else {
@@ -498,25 +497,21 @@ impl<T> Session<T> {
 			let total = info.total;
 			let weights = canonicalize_weights(new_a, total - new_a);
 			self.tree
-				.set_split_weights(split_id, weights)
-				.ok_or(OpError::NotSplit(split_id))?;
+				.set_split_weights(info.split, weights)
+				.ok_or(OpError::NotSplit(info.split))?;
 		}
 		self.bump_revision();
 		self.validate().map_err(OpError::Validation)
 	}
 
-	fn leaf_rects_from_snapshot(&self, snap: &Snapshot) -> Result<HashMap<NodeId, Rect>, NavError> {
+	fn ensure_leaf_rects_present(&self, snap: &Snapshot) -> Result<(), NavError> {
 		self.tree
 			.root_id()
 			.map(|root| self.tree.leaf_ids_dfs(root))
 			.unwrap_or_default()
 			.into_iter()
-			.map(|id| {
-				snap.rect(id)
-					.map(|rect| (id, rect))
-					.ok_or(NavError::MissingSnapshotRect(id))
-			})
-			.collect()
+			.find(|id| snap.rect(*id).is_none())
+			.map_or(Ok(()), |id| Err(NavError::MissingSnapshotRect(id)))
 	}
 
 	fn repair_after_mutation(
@@ -546,20 +541,16 @@ impl<T> Session<T> {
 	}
 
 	fn repair_selection_for_current_focus(&mut self) {
-		self.selection = match (self.selection, self.focus) {
-			(_, None) => None,
-			(Some(selection), Some(focus)) if self.tree.contains(selection) => {
-				if self.tree.is_leaf(selection) {
-					Some(focus)
-				} else if self.tree.contains_in_subtree(selection, focus) {
-					Some(selection)
-				} else {
-					Some(focus)
-				}
-			}
-			(None, Some(focus)) => Some(focus),
-			(Some(_), Some(focus)) => Some(focus),
+		let Some(focus) = self.focus else {
+			self.selection = None;
+			return;
 		};
+		self.selection = self
+			.selection
+			.filter(|selection| self.tree.contains(*selection))
+			.filter(|selection| self.tree.is_split(*selection))
+			.filter(|selection| self.tree.contains_in_subtree(*selection, focus))
+			.or(Some(focus));
 	}
 
 	fn ensure_fresh_snapshot(&self, snap: &Snapshot) -> Result<(), OpError> {

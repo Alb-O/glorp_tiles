@@ -363,6 +363,7 @@ fn solve_node<T>(
 		let split = tree
 			.split(id)
 			.ok_or(SolveError::Validation(ValidationError::MissingNode(id)))?;
+		let axis = split.axis();
 		let sum_a = summaries
 			.get(&split.a())
 			.copied()
@@ -371,23 +372,25 @@ fn solve_node<T>(
 			.get(&split.b())
 			.copied()
 			.ok_or(SolveError::Validation(ValidationError::MissingNode(split.b())))?;
-		let total = rect.extent(split.axis());
+		let (min_a, max_a) = sum_a.axis_limits(axis);
+		let (min_b, max_b) = sum_b.axis_limits(axis);
+		let total = rect.extent(axis);
 		let spec = PairSpec {
 			total,
-			min_a: sum_a.axis_limits(split.axis()).0,
-			min_b: sum_b.axis_limits(split.axis()).0,
-			max_a: sum_a.axis_limits(split.axis()).1,
-			max_b: sum_b.axis_limits(split.axis()).1,
+			min_a,
+			min_b,
+			max_a,
+			max_b,
 			wa: split.weights().a,
 			wb: split.weights().b,
 			sa: sum_a.shrink_cost,
 			sb: sum_b.shrink_cost,
 		};
 		let (chosen_a, chosen_score) = choose_extent_with_score(spec, policy);
-		let (rect_a, rect_b) = rect.split(split.axis(), chosen_a);
+		let (rect_a, rect_b) = rect.split(axis, chosen_a);
 		out.split_traces.push(SplitTrace {
 			split: id,
-			axis: split.axis(),
+			axis,
 			total,
 			chosen_a,
 			score: chosen_score,

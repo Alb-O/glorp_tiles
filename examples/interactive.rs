@@ -110,9 +110,9 @@ impl Demo {
 
 fn reset_demo() -> Result<Demo, OpError> {
 	let mut session = Session::new();
-	let _main = session.insert_root(String::from("main"), LeafMeta::default())?;
-	let _side = session.split_focus(Axis::X, Slot::B, String::from("side"), LeafMeta::default(), None)?;
-	let _log = session.wrap_selection(Axis::Y, Slot::B, String::from("log"), LeafMeta::default(), None)?;
+	let _main = session.insert_root("main".to_owned(), LeafMeta::default())?;
+	let _side = session.split_focus(Axis::X, Slot::B, "side".to_owned(), LeafMeta::default(), None)?;
+	let _log = session.wrap_selection(Axis::Y, Slot::B, "log".to_owned(), LeafMeta::default(), None)?;
 
 	Ok(Demo {
 		session,
@@ -206,7 +206,7 @@ fn annotations(session: &Session<String>, id: glorp_tiles::NodeId) -> String {
 }
 
 fn fmt_id(id: Option<glorp_tiles::NodeId>) -> String {
-	id.map_or_else(|| String::from("-"), |value| value.to_string())
+	id.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
 
 fn fmt_selection(session: &Session<String>) -> String {
@@ -214,7 +214,7 @@ fn fmt_selection(session: &Session<String>) -> String {
 		Some(id) if session.tree().is_leaf(id) => format!("{id}(leaf)"),
 		Some(id) if session.tree().is_split(id) => format!("{id}(split)"),
 		Some(id) => format!("{id}(?)"),
-		None => String::from("-"),
+		None => "-".to_owned(),
 	}
 }
 
@@ -282,37 +282,21 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 			demo.session.select_focus();
 			Ok(CommandOutcome::Continue { rerender: true })
 		}
-		["split", axis, slot] => {
+		["split", axis, slot, label @ ..] if label.len() <= 1 => {
 			let axis = parse_axis(axis)?;
 			let slot = parse_slot(slot)?;
-			let label = demo.fresh_label();
+			let label = label_for_insert(demo, label.first().copied());
 			demo.session
 				.split_focus(axis, slot, label, LeafMeta::default(), None)
 				.map_err(|error| error.to_string())?;
 			Ok(CommandOutcome::Continue { rerender: true })
 		}
-		["split", axis, slot, label] => {
+		["wrap", axis, slot, label @ ..] if label.len() <= 1 => {
 			let axis = parse_axis(axis)?;
 			let slot = parse_slot(slot)?;
-			demo.session
-				.split_focus(axis, slot, (*label).to_owned(), LeafMeta::default(), None)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
-		["wrap", axis, slot] => {
-			let axis = parse_axis(axis)?;
-			let slot = parse_slot(slot)?;
-			let label = demo.fresh_label();
+			let label = label_for_insert(demo, label.first().copied());
 			demo.session
 				.wrap_selection(axis, slot, label, LeafMeta::default(), None)
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
-		["wrap", axis, slot, label] => {
-			let axis = parse_axis(axis)?;
-			let slot = parse_slot(slot)?;
-			demo.session
-				.wrap_selection(axis, slot, (*label).to_owned(), LeafMeta::default(), None)
 				.map_err(|error| error.to_string())?;
 			Ok(CommandOutcome::Continue { rerender: true })
 		}
@@ -378,19 +362,9 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 				.map_err(|error| error.to_string())?;
 			Ok(CommandOutcome::Continue { rerender: true })
 		}
-		["preset", "tall", slot] => {
+		["preset", "tall", slot, weights @ ..] if weights.len() <= 2 => {
 			let slot = parse_slot(slot)?;
-			demo.session
-				.apply_preset(PresetKind::Tall(TallPreset {
-					master_slot: slot,
-					root_weights: WeightPair::default(),
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
-		["preset", "tall", slot, weight_a, weight_b] => {
-			let slot = parse_slot(slot)?;
-			let weights = parse_weight_pair(weight_a, weight_b)?;
+			let weights = parse_optional_weight_pair(weights)?;
 			demo.session
 				.apply_preset(PresetKind::Tall(TallPreset {
 					master_slot: slot,
@@ -399,19 +373,9 @@ fn dispatch_command(input: &str, demo: &mut Demo) -> Result<CommandOutcome, Stri
 				.map_err(|error| error.to_string())?;
 			Ok(CommandOutcome::Continue { rerender: true })
 		}
-		["preset", "wide", slot] => {
+		["preset", "wide", slot, weights @ ..] if weights.len() <= 2 => {
 			let slot = parse_slot(slot)?;
-			demo.session
-				.apply_preset(PresetKind::Wide(WidePreset {
-					master_slot: slot,
-					root_weights: WeightPair::default(),
-				}))
-				.map_err(|error| error.to_string())?;
-			Ok(CommandOutcome::Continue { rerender: true })
-		}
-		["preset", "wide", slot, weight_a, weight_b] => {
-			let slot = parse_slot(slot)?;
-			let weights = parse_weight_pair(weight_a, weight_b)?;
+			let weights = parse_optional_weight_pair(weights)?;
 			demo.session
 				.apply_preset(PresetKind::Wide(WidePreset {
 					master_slot: slot,
@@ -486,6 +450,18 @@ fn parse_weight_pair(weight_a: &str, weight_b: &str) -> Result<WeightPair, Strin
 		a: parse_u32(weight_a, "weight a")?,
 		b: parse_u32(weight_b, "weight b")?,
 	})
+}
+
+fn parse_optional_weight_pair(weights: &[&str]) -> Result<WeightPair, String> {
+	match weights {
+		[] => Ok(WeightPair::default()),
+		[weight_a, weight_b] => parse_weight_pair(weight_a, weight_b),
+		_ => Err(String::from("expected either zero or two weights")),
+	}
+}
+
+fn label_for_insert(demo: &mut Demo, label: Option<&str>) -> String {
+	label.map_or_else(|| demo.fresh_label(), str::to_owned)
 }
 
 enum CommandOutcome {

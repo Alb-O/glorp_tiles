@@ -318,20 +318,11 @@ impl<T> Tree<T> {
 				if split.weights.a == 0 && split.weights.b == 0 {
 					return Err(ValidationError::InvalidWeights(id));
 				}
-				self.validate_child(id, split.a, visited)?;
-				self.validate_child(id, split.b, visited)?;
+				self.validate_node(split.a, Some(id), visited)?;
+				self.validate_node(split.b, Some(id), visited)?;
 			}
 		}
 		Ok(())
-	}
-
-	fn validate_child(
-		&self, parent: NodeId, child: NodeId, visited: &mut HashSet<NodeId>,
-	) -> Result<(), ValidationError> {
-		if !self.nodes.contains_key(&child) {
-			return Err(ValidationError::MissingNode(child));
-		}
-		self.validate_node(child, Some(parent), visited)
 	}
 
 	/// Returns `true` if `id` exists in the tree.

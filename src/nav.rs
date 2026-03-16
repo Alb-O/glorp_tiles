@@ -4,13 +4,11 @@
 //! the directional half-plane, then are ranked lexicographically by gap and alignment metrics.
 //! Depth-first leaf order provides the final stable tie-break source.
 
-use {
-	crate::{
-		geom::{Direction, Rect, orth_gap},
-		ids::NodeId,
-		tree::Tree,
-	},
-	std::collections::HashMap,
+use crate::{
+	geom::{Direction, Rect, orth_gap},
+	ids::NodeId,
+	snapshot::Snapshot,
+	tree::Tree,
 };
 
 /// Lexicographic navigation score for one candidate leaf.
@@ -28,26 +26,20 @@ pub struct NavScore {
 
 /// Returns the best solved leaf neighbor of `current` in `dir`.
 ///
-/// `leaf_rects` is expected to contain solved rectangles for leaves of the same tree or snapshot.
-/// If `current` has no rectangle, the tree is empty, or no candidate lies in the directional
-/// half-plane, this returns `None`. Missing tree-order ranks fall back to `usize::MAX`.
+/// `snap` is expected to contain solved rectangles for leaves of the same tree. If `current` has
+/// no rectangle, the tree is empty, or no candidate lies in the directional half-plane, this
+/// returns `None`.
 #[must_use]
-pub fn best_neighbor<T>(
-	tree: &Tree<T>, leaf_rects: &HashMap<NodeId, Rect>, current: NodeId, dir: Direction,
-) -> Option<NodeId> {
-	let current_rect = leaf_rects.get(&current).copied()?;
-	let order = tree.root_id().map(|root| tree.leaf_ids_dfs(root)).unwrap_or_default();
-	let order_rank = order
+pub fn best_neighbor<T>(tree: &Tree<T>, snap: &Snapshot, current: NodeId, dir: Direction) -> Option<NodeId> {
+	let current_rect = snap.rect(current)?;
+	let root = tree.root_id()?;
+	tree.leaf_ids_dfs(root)
 		.into_iter()
 		.enumerate()
-		.map(|(idx, id)| (id, idx))
-		.collect::<HashMap<_, _>>();
-
-	leaf_rects
-		.iter()
-		.filter(|(id, _)| **id != current)
-		.filter_map(|(id, rect)| {
-			nav_score(current_rect, *rect, dir, *order_rank.get(id).unwrap_or(&usize::MAX)).map(|score| (*id, score))
+		.filter(|(_, id)| *id != current)
+		.filter_map(|(rank, id)| {
+			snap.rect(id)
+				.and_then(|rect| nav_score(current_rect, rect, dir, rank).map(|score| (id, score)))
 		})
 		.min_by_key(|(_, score)| *score)
 		.map(|(id, _)| id)
